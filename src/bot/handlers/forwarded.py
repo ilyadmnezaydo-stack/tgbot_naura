@@ -74,10 +74,14 @@ async def handle_forwarded_message(
         "first_name": first_name,
     }
 
+    # Escape markdown in user-provided text
+    from telegram.helpers import escape_markdown
+    safe_first_name = escape_markdown(first_name, version=1)
+
     await update.message.reply_text(
         f"📇 Добавить *@{username}* в контакты?\n\n"
         f"Напиши описание:\n"
-        f"`{first_name} — коллега из IT. раз в неделю`\n\n"
+        f"`{safe_first_name} — коллега из IT. раз в неделю`\n\n"
         f"Или /cancel для отмены.",
         parse_mode="Markdown",
     )
@@ -88,9 +92,20 @@ async def handle_pending_contact_description(
 ) -> bool:
     """
     Handle description input after forwarded message.
+    Uses LLM to parse description, tags, and frequency.
 
     Returns True if there was a pending contact and it was processed.
     """
+    from datetime import date as date_type
+
+    from telegram.helpers import escape_markdown
+
+    from src.bot.parsers.frequency import calculate_next_reminder, format_frequency
+    from src.db.engine import get_session
+    from src.db.repositories.contacts import ContactRepository
+    from src.db.repositories.users import UserRepository
+    from src.services.ai_service import AIService
+
     pending = context.user_data.get("pending_contact")
     if not pending:
         return False
@@ -103,34 +118,12 @@ async def handle_pending_contact_description(
         await update.message.reply_text("Отменено.")
         return True
 
-    # Parse the description - just add the contact with provided description
     username = pending["username"]
-    description = text
 
     # Clear pending
     del context.user_data["pending_contact"]
 
-    # Import here to avoid circular imports
-    from src.bot.parsers.frequency import calculate_next_reminder, parse_frequency
-    from src.db.engine import get_session
-    from src.db.repositories.contacts import ContactRepository
-    from src.db.repositories.users import UserRepository
-    from src.services.ai_service import AIService
-
     user_id = update.effective_user.id
-
-    # Try to extract frequency from the description
-    frequency = "biweekly"
-    custom_days = None
-
-    # Check if text contains frequency info (after a period)
-    if ". " in text:
-        parts = text.rsplit(". ", 1)
-        description = parts[0]
-        freq_text = parts[1] if len(parts) > 1 else ""
-        freq_result = parse_frequency(freq_text)
-        if freq_result:
-            frequency, custom_days = freq_result
 
     async with get_session() as session:
         # Ensure user exists
@@ -153,15 +146,41 @@ async def handle_pending_contact_description(
             )
             return True
 
-        # Extract tags using AI
+        # Parse input using LLM (description, tags, frequency, date)
         ai_service = AIService()
-        tags = await ai_service.extract_tags(description)
+        parsed = await ai_service.parse_contact_input(text)
+
+        if not parsed:
+            # Fallback to simple mode
+            description = text
+            tags = []
+            frequency = "biweekly"
+            custom_days = None
+            one_time_date = None
+        else:
+            description = parsed.description
+            tags = parsed.tags
+            frequency = parsed.frequency_type
+            custom_days = parsed.custom_days
+            one_time_date = None
+
+            # Parse reminder_date if provided
+            if parsed.reminder_date:
+                try:
+                    one_time_date = date_type.fromisoformat(parsed.reminder_date)
+                except ValueError:
+                    pass
 
         # Calculate next reminder
-        next_reminder = calculate_next_reminder(frequency, custom_days)
+        if frequency == "one_time" and one_time_date:
+            next_reminder = one_time_date
+            status = "one_time"
+        else:
+            next_reminder = calculate_next_reminder(frequency, custom_days)
+            status = "active"
 
         # Create contact
-        contact = await contact_repo.create(
+        await contact_repo.create(
             user_id=user_id,
             username=username,
             description=description,
@@ -169,20 +188,23 @@ async def handle_pending_contact_description(
             reminder_frequency=frequency,
             custom_interval_days=custom_days,
             next_reminder_date=next_reminder,
-            status="active",
+            one_time_date=one_time_date,
+            status=status,
         )
 
         # Format response
-        from src.bot.parsers.frequency import format_frequency
-
         freq_text = format_frequency(frequency, custom_days)
         tags_text = " ".join(tags) if tags else "—"
+
+        # Escape markdown in user-provided text
+        safe_desc = escape_markdown(description, version=1)
+        safe_tags = escape_markdown(tags_text, version=1)
 
         await update.message.reply_text(
             f"✅ Контакт добавлен!\n\n"
             f"*@{username}*\n"
-            f"{description}\n\n"
-            f"Теги: {tags_text}\n"
+            f"{safe_desc}\n\n"
+            f"Теги: {safe_tags}\n"
             f"Напоминание: {freq_text}\n"
             f"Следующее: {next_reminder.strftime('%d.%m.%Y')}",
             parse_mode="Markdown",

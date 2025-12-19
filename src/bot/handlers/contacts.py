@@ -2,20 +2,22 @@
 Contact management handlers: add, update, list.
 """
 import re
+from datetime import date
 
 from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
+from telegram.helpers import escape_markdown
 
 from src.bot.handlers.callbacks import get_main_menu_keyboard, send_contact_card
-from src.bot.parsers.frequency import calculate_next_reminder, format_frequency, parse_frequency, parse_date
+from src.bot.parsers.frequency import calculate_next_reminder, format_frequency
 from src.db.engine import get_session
 from src.db.repositories.contacts import ContactRepository
 from src.db.repositories.users import UserRepository
 from src.services.ai_service import AIService
 
-# Pattern for @username description. frequency (without "добавь")
-DIRECT_ADD_PATTERN = re.compile(
-    r"^@?([a-zA-Z][a-zA-Z0-9_]{4,31})\s+(.+?)(?:\.\s*(.+))?$",
+# Simple pattern to extract @username from the beginning
+USERNAME_PATTERN = re.compile(
+    r"^@?([a-zA-Z][a-zA-Z0-9_]{4,31})\s+(.+)$",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -25,51 +27,28 @@ async def handle_add_from_prompt(
 ) -> bool:
     """
     Handle add contact after /add command or button press.
-    Format: @username description. frequency (without "добавь" prefix)
+    Uses LLM to parse description, tags, and frequency.
 
     Returns True if handled, False otherwise.
     """
     text = update.message.text.strip()
 
-    # Try to parse direct format: @username description. frequency
-    match = DIRECT_ADD_PATTERN.match(text)
+    # Extract username
+    match = USERNAME_PATTERN.match(text)
     if not match:
         await update.message.reply_text(
             "Не удалось распознать формат.\n\n"
             "Отправь в формате:\n"
-            "`@username описание контакта. частота`\n\n"
+            "`@username описание контакта`\n\n"
             "Например:\n"
-            "`@ivan коллега из маркетинга. раз в неделю`",
+            "`@ivan коллега из маркетинга. раз в неделю`\n"
+            "`@anna друг. напомни завтра`",
             parse_mode="Markdown",
         )
         return True
 
     username = match.group(1)
-    description = match.group(2).strip()
-    freq_text = match.group(3)
-
-    # Parse frequency
-    frequency = "biweekly"
-    custom_days = None
-    one_time_date = None
-
-    if freq_text:
-        freq_text = freq_text.strip()
-        # Try parsing as frequency
-        freq_result = parse_frequency(freq_text)
-        if freq_result:
-            frequency, custom_days = freq_result
-            # If one_time, try to parse date
-            if frequency == "one_time":
-                parsed_date = parse_date(freq_text)
-                if parsed_date:
-                    one_time_date = parsed_date
-        else:
-            # Try parsing as date (one-time reminder)
-            parsed_date = parse_date(freq_text)
-            if parsed_date:
-                frequency = "one_time"
-                one_time_date = parsed_date
+    raw_description = match.group(2).strip()
 
     # Clear the awaiting flag
     context.user_data.pop("awaiting_add", None)
@@ -97,9 +76,30 @@ async def handle_add_from_prompt(
             )
             return True
 
-        # Extract tags using AI
+        # Parse input using LLM (description, tags, frequency, date)
         ai_service = AIService()
-        tags = await ai_service.extract_tags(description)
+        parsed = await ai_service.parse_contact_input(raw_description)
+
+        if not parsed:
+            # Fallback to simple mode
+            description = raw_description
+            tags = []
+            frequency = "biweekly"
+            custom_days = None
+            one_time_date = None
+        else:
+            description = parsed.description
+            tags = parsed.tags
+            frequency = parsed.frequency_type
+            custom_days = parsed.custom_days
+            one_time_date = None
+
+            # Parse reminder_date if provided
+            if parsed.reminder_date:
+                try:
+                    one_time_date = date.fromisoformat(parsed.reminder_date)
+                except ValueError:
+                    pass
 
         # Calculate next reminder date
         if frequency == "one_time" and one_time_date:
@@ -110,7 +110,7 @@ async def handle_add_from_prompt(
             status = "active"
 
         # Create contact
-        contact = await contact_repo.create(
+        await contact_repo.create(
             user_id=user_id,
             username=username,
             description=description,
@@ -126,11 +126,15 @@ async def handle_add_from_prompt(
         freq_display = format_frequency(frequency, custom_days)
         tags_text = " ".join(tags) if tags else "—"
 
+        # Escape markdown in user-provided text
+        safe_desc = escape_markdown(description, version=1)
+        safe_tags = escape_markdown(tags_text, version=1)
+
         await update.message.reply_text(
             f"✅ Контакт добавлен!\n\n"
             f"*@{username}*\n"
-            f"{description}\n\n"
-            f"Теги: {tags_text}\n"
+            f"{safe_desc}\n\n"
+            f"Теги: {safe_tags}\n"
             f"Напоминание: {freq_display}\n"
             f"Следующее: {next_reminder.strftime('%d.%m.%Y')}",
             parse_mode="Markdown",
@@ -273,10 +277,14 @@ async def edit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
             context.user_data["editing_contact"] = str(contact.id)
 
+            # Escape markdown in user-provided text
+            safe_desc = escape_markdown(contact.description, version=1) if contact.description else "не указано"
+            safe_tags = escape_markdown(' '.join(contact.tags), version=1) if contact.tags else "—"
+
             await update.message.reply_text(
                 f"✏️ *Редактирование @{username}*\n\n"
-                f"Текущее описание: _{contact.description or 'не указано'}_\n"
-                f"Теги: {' '.join(contact.tags) if contact.tags else '—'}\n\n"
+                f"Текущее описание: _{safe_desc}_\n"
+                f"Теги: {safe_tags}\n\n"
                 "Отправь новые данные:\n"
                 "• Новое описание\n"
                 "• Или новую частоту (раз в неделю, раз в месяц...)\n"

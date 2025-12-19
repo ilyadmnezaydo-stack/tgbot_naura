@@ -7,6 +7,7 @@ from uuid import UUID
 import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CallbackQueryHandler
+from telegram.helpers import escape_markdown
 
 from src.bot.parsers.frequency import calculate_next_reminder, format_frequency
 from src.config import settings
@@ -350,11 +351,15 @@ async def send_contact_card(message, contact, edit: bool = False, prefix: str = 
     tags_text = " ".join(contact.tags) if contact.tags else ""
     desc_text = contact.description or ""
 
+    # Escape markdown in user-provided text
+    safe_desc = escape_markdown(desc_text, version=1) if desc_text else ""
+    safe_tags = escape_markdown(tags_text, version=1) if tags_text else ""
+
     text = f"{prefix}*@{contact.username}* ({status_text})\n"
-    if desc_text:
-        text += f"{desc_text}\n"
-    if tags_text:
-        text += f"{tags_text}"
+    if safe_desc:
+        text += f"{safe_desc}\n"
+    if safe_tags:
+        text += f"{safe_tags}"
 
     keyboard = get_contact_keyboard(str(contact.id), contact.status)
 

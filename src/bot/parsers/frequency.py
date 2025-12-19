@@ -96,6 +96,9 @@ def parse_date(text: str) -> Optional[date]:
     today = date.today()
 
     # Relative dates
+    if "сегодня" in text:
+        return today
+
     if "завтра" in text:
         return today + timedelta(days=1)
 
