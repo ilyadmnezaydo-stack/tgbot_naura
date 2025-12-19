@@ -191,8 +191,9 @@ async def handle_edit_from_prompt(
 ) -> bool:
     """
     Handle edit input after /edit or button press.
-    Updates description, tags, or frequency based on input.
+    Uses LLM to parse and update description, tags, or frequency.
     """
+    import re
     from uuid import UUID
 
     contact_id_str = context.user_data.get("editing_contact")
@@ -216,40 +217,59 @@ async def handle_edit_from_prompt(
         updates = {}
         response_parts = [f"✅ Контакт @{contact.username} обновлён:\n"]
 
-        # Check if input is tags (starts with #)
+        # Check if input is just tags (starts with #)
         if text.startswith("#"):
-            import re
             tags = re.findall(r"#(\w+)", text)
             tags = [f"#{t}" for t in tags]
             updates["tags"] = tags
             response_parts.append(f"Теги: {' '.join(tags)}")
-
-        # Check if input is frequency
         else:
-            freq_result = parse_frequency(text)
-            if freq_result:
-                frequency, custom_days = freq_result
-                updates["reminder_frequency"] = frequency
-                updates["custom_interval_days"] = custom_days
+            # Use LLM to parse the input
+            ai_service = AIService()
+            parsed = await ai_service.parse_contact_input(text)
 
-                # Recalculate next reminder
-                new_next = calculate_next_reminder(frequency, custom_days)
-                updates["next_reminder_date"] = new_next
+            if parsed:
+                # Update description if it changed
+                if parsed.description and parsed.description != text:
+                    # User provided description + frequency
+                    updates["description"] = parsed.description
+                    response_parts.append(f"Описание: {parsed.description}")
+                    updates["tags"] = parsed.tags
+                    if parsed.tags:
+                        response_parts.append(f"Теги: {' '.join(parsed.tags)}")
 
-                freq_text = format_frequency(frequency, custom_days)
-                response_parts.append(f"Частота: {freq_text}")
-                response_parts.append(f"Следующее: {new_next.strftime('%d.%m.%Y')}")
-            else:
-                # Treat as new description
-                updates["description"] = text
-                response_parts.append(f"Описание: {text}")
+                # Update frequency if not default
+                if parsed.frequency_type != "biweekly" or parsed.custom_days or parsed.reminder_date:
+                    updates["reminder_frequency"] = parsed.frequency_type
+                    updates["custom_interval_days"] = parsed.custom_days
 
-                # Re-extract tags from new description
-                ai_service = AIService()
-                new_tags = await ai_service.extract_tags(text)
-                updates["tags"] = new_tags
-                if new_tags:
-                    response_parts.append(f"Теги: {' '.join(new_tags)}")
+                    # Handle one-time reminder with date
+                    if parsed.frequency_type == "one_time" and parsed.reminder_date:
+                        try:
+                            one_time_date = date.fromisoformat(parsed.reminder_date)
+                            updates["next_reminder_date"] = one_time_date
+                            updates["one_time_date"] = one_time_date
+                            updates["status"] = "one_time"
+                        except ValueError:
+                            pass
+                    else:
+                        new_next = calculate_next_reminder(parsed.frequency_type, parsed.custom_days)
+                        updates["next_reminder_date"] = new_next
+                        if contact.status == "one_time":
+                            updates["status"] = "active"
+
+                    freq_text = format_frequency(parsed.frequency_type, parsed.custom_days)
+                    response_parts.append(f"Частота: {freq_text}")
+                    if "next_reminder_date" in updates:
+                        response_parts.append(f"Следующее: {updates['next_reminder_date'].strftime('%d.%m.%Y')}")
+
+                # If only description provided (frequency stayed default)
+                if not updates and parsed.description:
+                    updates["description"] = parsed.description
+                    updates["tags"] = parsed.tags
+                    response_parts.append(f"Описание: {parsed.description}")
+                    if parsed.tags:
+                        response_parts.append(f"Теги: {' '.join(parsed.tags)}")
 
         if updates:
             await contact_repo.update(contact, **updates)
