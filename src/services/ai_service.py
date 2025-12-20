@@ -38,6 +38,18 @@ class ParsedContactInput(BaseModel):
     )
 
 
+class ParsedContactEdit(BaseModel):
+    """Structured output for contact edit parsing"""
+    update_description: bool = Field(description="True если пользователь хочет изменить описание")
+    new_description: Optional[str] = Field(default=None, description="Новое описание (если update_description=True)")
+    update_tags: bool = Field(description="True если пользователь хочет изменить теги")
+    new_tags: Optional[list[str]] = Field(default=None, description="Новые теги (если update_tags=True)")
+    update_frequency: bool = Field(description="True если пользователь хочет изменить частоту")
+    new_frequency_type: Optional[str] = Field(default=None, description="Новая частота")
+    new_custom_days: Optional[int] = Field(default=None, description="Дни для custom частоты")
+    new_reminder_date: Optional[str] = Field(default=None, description="Дата для one_time в формате YYYY-MM-DD")
+
+
 class AIService:
     """AI service for contact parsing, tag extraction, and semantic search"""
 
@@ -114,6 +126,75 @@ class AIService:
 
         except Exception as e:
             logger.error(f"Error parsing contact input: {e}")
+            return None
+
+    async def parse_contact_edit(
+        self,
+        edit_request: str,
+        current_description: str,
+        current_tags: list[str],
+        current_frequency: str,
+    ) -> Optional[ParsedContactEdit]:
+        """
+        Parse edit request with context of current contact data.
+
+        Args:
+            edit_request: User's edit request like "раз в месяц" or "новое описание"
+            current_description: Current contact description
+            current_tags: Current contact tags
+            current_frequency: Current reminder frequency
+
+        Returns:
+            ParsedContactEdit indicating which fields to update
+        """
+        if not edit_request or not edit_request.strip():
+            return None
+
+        today = date.today()
+        tags_str = ", ".join(current_tags) if current_tags else "нет тегов"
+
+        try:
+            response = await self.client.beta.chat.completions.parse(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": f"""Ты помощник для редактирования контакта. Сегодня: {today.isoformat()}.
+
+Текущие данные контакта:
+- Описание: "{current_description}"
+- Теги: {tags_str}
+- Частота: {current_frequency}
+
+Пользователь хочет что-то изменить. Определи, ЧТО ИМЕННО он хочет изменить:
+
+1. Если упоминает новое описание/информацию о человеке → update_description=True
+2. Если упоминает теги (#тег) → update_tags=True
+3. Если упоминает частоту/дату (раз в месяц, завтра, через 5 дней) → update_frequency=True
+
+ВАЖНО: Меняй ТОЛЬКО то, что явно запрошено!
+- "раз в месяц" → меняем только частоту, НЕ трогаем описание и теги
+- "новый дизайнер" → меняем только описание, НЕ трогаем частоту
+- "#друг #москва" → меняем только теги
+
+Частоты: daily, weekly, biweekly, monthly, custom, one_time
+Для дат (сегодня, завтра, 15.01) используй one_time и reminder_date в формате YYYY-MM-DD.""",
+                    },
+                    {"role": "user", "content": edit_request},
+                ],
+                response_format=ParsedContactEdit,
+            )
+
+            parsed = response.choices[0].message.parsed
+            if parsed and parsed.new_tags:
+                # Ensure tags start with #
+                parsed.new_tags = [
+                    f"#{tag.lstrip('#')}" for tag in parsed.new_tags if tag
+                ][:5]
+            return parsed
+
+        except Exception as e:
+            logger.error(f"Error parsing contact edit: {e}")
             return None
 
     async def extract_tags(self, description: str) -> list[str]:

@@ -7,6 +7,7 @@ from typing import Dict, List
 
 from telegram.ext import ContextTypes
 
+from src.bot.handlers.callbacks import send_contact_card_to_chat
 from src.config import settings
 from src.db.engine import get_session
 from src.db.models import Contact
@@ -40,27 +41,20 @@ async def morning_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
         # Send reminders to each user
         for user_id, contacts in user_contacts.items():
-            message_parts = ["☀️ *Доброе утро!* Сегодня стоит написать:\n"]
-
-            for c in contacts:
-                desc = ""
-                if c.description:
-                    desc = f" — {c.description[:30]}..." if len(c.description) > 30 else f" — {c.description}"
-                message_parts.append(f"• @{c.username}{desc}")
-
-            message_parts.append("\n💡 Отметить: `я написал @username`")
-
             try:
+                # Send header
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text="\n".join(message_parts),
+                    text="☀️ *Доброе утро!* Сегодня стоит написать:",
                     parse_mode="Markdown",
                 )
-                logger.info(f"Sent morning reminder to user {user_id} for {len(contacts)} contacts")
 
-                # Log reminder sent for each contact
+                # Send each contact as a card with buttons
                 for c in contacts:
+                    await send_contact_card_to_chat(context.bot, user_id, c)
                     await repo.add_history(c.id, "reminder_sent", "Morning reminder")
+
+                logger.info(f"Sent morning reminder to user {user_id} for {len(contacts)} contacts")
 
             except Exception as e:
                 logger.error(f"Failed to send morning reminder to {user_id}: {e}")
@@ -91,21 +85,18 @@ async def evening_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
         # Send reminders to each user
         for user_id, contacts in user_contacts.items():
-            message_parts = ["🌙 *Вечернее напоминание!*\n"]
-            message_parts.append("Ты ещё не отметил, что связался с:\n")
-
-            for c in contacts:
-                message_parts.append(f"• @{c.username}")
-
-            message_parts.append("\n✅ Если написал: `я написал @username`")
-            message_parts.append("⏸️ Поставить на паузу: `pause @username`")
-
             try:
+                # Send header
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text="\n".join(message_parts),
+                    text="🌙 *Вечернее напоминание!*\nТы ещё не отметил, что связался с:",
                     parse_mode="Markdown",
                 )
+
+                # Send each contact as a card with buttons
+                for c in contacts:
+                    await send_contact_card_to_chat(context.bot, user_id, c)
+
                 logger.info(f"Sent evening reminder to user {user_id} for {len(contacts)} contacts")
 
             except Exception as e:

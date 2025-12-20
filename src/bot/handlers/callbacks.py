@@ -332,21 +332,21 @@ async def handle_delete_cancel(update: Update, context: ContextTypes.DEFAULT_TYP
 
 # ============ HELPER FUNCTIONS ============
 
-async def send_contact_card(message, contact, edit: bool = False, prefix: str = "") -> None:
-    """Send or edit a contact card with inline buttons."""
-    # Format contact info
+def _format_contact_card_text(contact, prefix: str = "") -> str:
+    """Format contact card text with markdown escaping."""
+    # Format status/date info
     if contact.status == "paused":
-        status_text = "⏸️ на паузе"
+        status_text = "⏸️ На паузе"
     elif contact.status == "one_time":
         date_str = (
             contact.one_time_date.strftime("%d.%m")
             if contact.one_time_date
             else contact.next_reminder_date.strftime("%d.%m") if contact.next_reminder_date else "?"
         )
-        status_text = f"📅 {date_str}"
+        status_text = f"📅 Напоминание: {date_str}"
     else:
         next_date = contact.next_reminder_date.strftime("%d.%m") if contact.next_reminder_date else "?"
-        status_text = f"след. {next_date}"
+        status_text = f"🔔 Следующее: {next_date}"
 
     tags_text = " ".join(contact.tags) if contact.tags else ""
     desc_text = contact.description or ""
@@ -355,18 +355,33 @@ async def send_contact_card(message, contact, edit: bool = False, prefix: str = 
     safe_desc = escape_markdown(desc_text, version=1) if desc_text else ""
     safe_tags = escape_markdown(tags_text, version=1) if tags_text else ""
 
-    text = f"{prefix}*@{contact.username}* ({status_text})\n"
+    # Build card: username, description, tags, status
+    text = f"{prefix}*@{contact.username}*\n"
     if safe_desc:
         text += f"{safe_desc}\n"
     if safe_tags:
-        text += f"{safe_tags}"
+        text += f"{safe_tags}\n"
+    text += status_text
 
+    return text
+
+
+async def send_contact_card(message, contact, edit: bool = False, prefix: str = "") -> None:
+    """Send or edit a contact card with inline buttons."""
+    text = _format_contact_card_text(contact, prefix)
     keyboard = get_contact_keyboard(str(contact.id), contact.status)
 
     if edit:
         await message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
     else:
         await message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
+
+
+async def send_contact_card_to_chat(bot, chat_id: int, contact) -> None:
+    """Send contact card to a specific chat (for scheduler jobs)."""
+    text = _format_contact_card_text(contact)
+    keyboard = get_contact_keyboard(str(contact.id), contact.status)
+    await bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard, parse_mode="Markdown")
 
 
 # ============ CALLBACK ROUTER ============
