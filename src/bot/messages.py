@@ -5,14 +5,20 @@ All user-facing message texts are defined here for consistency.
 from telegram.helpers import escape_markdown
 
 
-def format_contact_preview(username: str, description: str, tags: list[str]) -> str:
+def format_contact_preview(
+    username: str, description: str, tags: list[str], display_name: str | None = None
+) -> str:
     """Format contact preview before confirmation."""
     safe_desc = escape_markdown(description, version=1) if description else ""
     tags_text = " ".join(tags) if tags else ""
     safe_tags = escape_markdown(tags_text, version=1) if tags_text else ""
 
     text = f"📇 *Новый контакт:*\n\n"
-    text += f"*@{username}*\n"
+    if display_name:
+        safe_name = escape_markdown(display_name, version=1)
+        text += f"*{safe_name}* (@{username})\n"
+    else:
+        text += f"*@{username}*\n"
     if safe_desc:
         text += f"{safe_desc}\n"
     if safe_tags:
@@ -49,6 +55,7 @@ def format_contact_card(
     next_reminder_date,
     one_time_date,
     prefix: str = "",
+    display_name: str | None = None,
 ) -> str:
     """Format contact card text with markdown escaping."""
     # Format status/date info
@@ -72,8 +79,12 @@ def format_contact_card(
     safe_desc = escape_markdown(desc_text, version=1) if desc_text else ""
     safe_tags = escape_markdown(tags_text, version=1) if tags_text else ""
 
-    # Build card: username, description, tags, status
-    text = f"{prefix}*@{username}*\n"
+    # Build card: name/username, description, tags, status
+    if display_name:
+        safe_name = escape_markdown(display_name, version=1)
+        text = f"{prefix}*{safe_name}* (@{username})\n"
+    else:
+        text = f"{prefix}*@{username}*\n"
     if safe_desc:
         text += f"{safe_desc}\n"
     if safe_tags:
@@ -108,13 +119,13 @@ def format_custom_date_prompt() -> str:
     )
 
 
-def format_description_prompt(username: str, first_name: str) -> str:
+def format_description_prompt(username: str, display_name: str) -> str:
     """Format prompt for contact description."""
-    safe_first_name = escape_markdown(first_name, version=1)
+    safe_display_name = escape_markdown(display_name, version=1)
     return (
-        f"📇 Добавить *@{username}* в контакты?\n\n"
+        f"📇 Добавить *{safe_display_name}* (@{username}) в контакты?\n\n"
         f"Напиши описание:\n"
-        f"`{safe_first_name} — коллега из IT`\n\n"
+        f"`коллега из IT`\n\n"
         f"Или /cancel для отмены."
     )
 

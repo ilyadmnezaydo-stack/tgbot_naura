@@ -14,6 +14,7 @@ class ContactRepository(BaseRepository):
         user_id: int,
         username: str,
         description: Optional[str] = None,
+        display_name: Optional[str] = None,
         tags: Optional[list[str]] = None,
         reminder_frequency: str = "biweekly",
         custom_interval_days: Optional[int] = None,
@@ -24,6 +25,7 @@ class ContactRepository(BaseRepository):
         contact = Contact(
             user_id=user_id,
             username=username,
+            display_name=display_name,
             description=description,
             tags=tags or [],
             reminder_frequency=reminder_frequency,

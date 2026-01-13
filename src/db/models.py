@@ -50,6 +50,7 @@ class Contact(Base):
         BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     username = Column(String(255), nullable=False)
+    display_name = Column(String(255), nullable=True)  # Full name from Telegram profile
     description = Column(Text, nullable=True)
     tags = Column(ARRAY(Text), default=[])
     reminder_frequency = Column(

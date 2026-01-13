@@ -107,6 +107,7 @@ async def handle_confirm_contact(update: Update, context: ContextTypes.DEFAULT_T
 
     user_id = update.effective_user.id
     username = draft["username"]
+    display_name = draft.get("display_name")
     description = draft["description"]
     tags = draft["tags"]
 
@@ -135,6 +136,7 @@ async def handle_confirm_contact(update: Update, context: ContextTypes.DEFAULT_T
         contact = await contact_repo.create(
             user_id=user_id,
             username=username,
+            display_name=display_name,
             description=description,
             tags=tags,
             reminder_frequency="monthly",  # Default, will be updated
@@ -169,7 +171,7 @@ async def handle_edit_draft(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # Move draft back to pending for re-entry
     context.user_data["pending_contact"] = {
         "username": draft["username"],
-        "first_name": draft["username"],  # Use username as fallback
+        "display_name": draft.get("display_name") or draft["username"],
     }
     del context.user_data["draft_contact"]
 
@@ -579,6 +581,7 @@ async def send_contact_card(message, contact, edit: bool = False, prefix: str = 
         next_reminder_date=contact.next_reminder_date,
         one_time_date=contact.one_time_date,
         prefix=prefix,
+        display_name=contact.display_name,
     )
     keyboard = get_contact_keyboard(str(contact.id), contact.status)
 
@@ -597,6 +600,7 @@ async def send_contact_card_to_chat(bot, chat_id: int, contact) -> None:
         status=contact.status,
         next_reminder_date=contact.next_reminder_date,
         one_time_date=contact.one_time_date,
+        display_name=contact.display_name,
     )
     keyboard = get_contact_keyboard(str(contact.id), contact.status)
     await bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard, parse_mode="Markdown")

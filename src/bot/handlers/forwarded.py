@@ -25,7 +25,7 @@ async def handle_forwarded_message(
         return
 
     username = None
-    first_name = None
+    display_name = None
 
     # Try to extract username from forward origin
     # python-telegram-bot v20+ uses forward_origin
@@ -36,12 +36,20 @@ async def handle_forwarded_message(
         # MessageOriginUser - forwarded from a user
         sender = origin.sender_user
         username = sender.username
-        first_name = sender.first_name or sender.username or "Unknown"
+        # Build full name from first_name + last_name
+        display_name = sender.first_name or ""
+        if sender.last_name:
+            display_name = f"{display_name} {sender.last_name}".strip()
+        if not display_name:
+            display_name = sender.username or "Unknown"
+    elif hasattr(origin, "sender_user_name"):
+        # MessageOriginHiddenUser - user hid forwarding, only name available
+        display_name = origin.sender_user_name
     elif hasattr(origin, "chat") and origin.chat:
         # MessageOriginChat - forwarded from a chat/channel
         chat = origin.chat
         username = chat.username
-        first_name = chat.title or chat.username or "Unknown"
+        display_name = chat.title or chat.username or "Unknown"
 
     if not username:
         await update.message.reply_text(
@@ -74,11 +82,11 @@ async def handle_forwarded_message(
     # Store pending contact info in user_data for follow-up
     context.user_data["pending_contact"] = {
         "username": username.lower(),
-        "first_name": first_name,
+        "display_name": display_name,
     }
 
     await update.message.reply_text(
-        format_description_prompt(username, first_name),
+        format_description_prompt(username, display_name),
         parse_mode="Markdown",
     )
 
@@ -108,6 +116,7 @@ async def handle_pending_contact_description(
         return True
 
     username = pending["username"]
+    display_name = pending.get("display_name")
 
     # Parse input using LLM (description, tags only - no frequency here)
     ai_service = AIService()
@@ -124,6 +133,7 @@ async def handle_pending_contact_description(
     # Store draft contact for confirmation
     context.user_data["draft_contact"] = {
         "username": username,
+        "display_name": display_name,
         "description": description,
         "tags": tags,
     }
@@ -133,7 +143,7 @@ async def handle_pending_contact_description(
 
     # Show preview with confirmation buttons
     await update.message.reply_text(
-        format_contact_preview(username, description, tags),
+        format_contact_preview(username, description, tags, display_name),
         parse_mode="Markdown",
         reply_markup=get_confirm_contact_keyboard(),
     )
