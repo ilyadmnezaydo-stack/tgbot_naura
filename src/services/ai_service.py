@@ -50,6 +50,12 @@ class ParsedContactEdit(BaseModel):
     new_reminder_date: Optional[str] = Field(default=None, description="Дата для one_time в формате YYYY-MM-DD")
 
 
+class ParsedDate(BaseModel):
+    """Structured output for date parsing"""
+    date: Optional[str] = Field(description="Распознанная дата в формате YYYY-MM-DD")
+    error: Optional[str] = Field(default=None, description="Сообщение об ошибке, если дату не удалось распознать")
+
+
 class AIService:
     """AI service for contact parsing, tag extraction, and semantic search"""
 
@@ -195,6 +201,75 @@ class AIService:
 
         except Exception as e:
             logger.error(f"Error parsing contact edit: {e}")
+            return None
+
+    async def parse_date(self, text: str) -> Optional[date]:
+        """
+        Parse date from natural language using LLM.
+
+        Supports various formats:
+        - Relative: "завтра", "через неделю", "в следующую пятницу"
+        - Absolute: "15 февраля", "15.02", "15/02/2025"
+        - Natural: "в конце месяца", "на следующей неделе"
+
+        Args:
+            text: User input with date information
+
+        Returns:
+            date object or None if parsing failed
+        """
+        if not text or not text.strip():
+            return None
+
+        today = date.today()
+
+        try:
+            response = await self.client.beta.chat.completions.parse(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": f"""Ты парсер дат. Сегодня: {today.isoformat()} ({today.strftime('%A')}, {today.strftime('%d %B %Y')}).
+
+Распознай дату из текста пользователя и верни её в формате YYYY-MM-DD.
+
+Примеры:
+- "завтра" → {(today + __import__('datetime').timedelta(days=1)).isoformat()}
+- "послезавтра" → {(today + __import__('datetime').timedelta(days=2)).isoformat()}
+- "через неделю" → {(today + __import__('datetime').timedelta(days=7)).isoformat()}
+- "через 2 недели" → {(today + __import__('datetime').timedelta(days=14)).isoformat()}
+- "через месяц" → дата через ~30 дней
+- "15 февраля" → 2025-02-15 (или следующий год, если дата уже прошла)
+- "в пятницу" → ближайшая пятница
+- "в следующий понедельник" → понедельник следующей недели
+- "в конце месяца" → последний день текущего месяца
+- "1.03" или "01/03" → 2025-03-01
+
+ВАЖНО:
+- Дата должна быть в БУДУЩЕМ (после сегодня)
+- Если дата неоднозначная, выбирай ближайшую будущую
+- Если не можешь распознать, верни error с пояснением
+
+Верни date=null и error="сообщение" если:
+- Текст не содержит информации о дате
+- Дата в прошлом и не может быть интерпретирована как будущая""",
+                    },
+                    {"role": "user", "content": text},
+                ],
+                response_format=ParsedDate,
+            )
+
+            parsed = response.choices[0].message.parsed
+            if parsed and parsed.date:
+                try:
+                    return date.fromisoformat(parsed.date)
+                except ValueError:
+                    logger.warning(f"Invalid date format from AI: {parsed.date}")
+                    return None
+            return None
+
+        except Exception as e:
+            logger.error(f"Error parsing date: {e}")
             return None
 
     async def extract_tags(self, description: str) -> list[str]:

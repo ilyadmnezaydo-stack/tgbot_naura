@@ -1,67 +1,36 @@
 """
 Callback query handlers for inline buttons.
 """
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from uuid import UUID
 
 import pytz
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import ContextTypes, CallbackQueryHandler
-from telegram.helpers import escape_markdown
 
+from src.bot.keyboards import (
+    get_main_menu_keyboard,
+    get_contact_keyboard,
+    get_delete_confirm_keyboard,
+    get_reminder_type_keyboard,
+    get_regular_interval_keyboard,
+    get_onetime_date_keyboard,
+    get_existing_contact_keyboard,
+)
+from src.bot.messages import (
+    format_contact_card,
+    format_contact_saved,
+    format_reminder_set,
+    format_no_reminder_set,
+    format_custom_interval_prompt,
+    format_custom_date_prompt,
+    format_edit_description_prompt,
+)
 from src.bot.parsers.frequency import calculate_next_reminder, format_frequency
 from src.config import settings
 from src.db.engine import get_session
 from src.db.repositories.contacts import ContactRepository
 from src.db.repositories.users import UserRepository
-from src.services.ai_service import AIService
-
-
-def get_main_menu_keyboard() -> InlineKeyboardMarkup:
-    """Create main menu keyboard."""
-    keyboard = [
-        [InlineKeyboardButton("➕ Добавить контакт", callback_data="menu:add")],
-        [InlineKeyboardButton("📋 Мои контакты", callback_data="menu:list")],
-        [InlineKeyboardButton("🔍 Найти контакт", callback_data="menu:search")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-
-def get_contact_keyboard(contact_id: str, status: str) -> InlineKeyboardMarkup:
-    """Create keyboard for a contact based on its status."""
-    if status == "paused":
-        keyboard = [
-            [
-                InlineKeyboardButton("▶️ Продолжить", callback_data=f"resume:{contact_id}"),
-                InlineKeyboardButton("✏️ Изменить", callback_data=f"edit:{contact_id}"),
-            ],
-            [
-                InlineKeyboardButton("❌ Удалить", callback_data=f"delete:{contact_id}"),
-            ],
-        ]
-    else:
-        keyboard = [
-            [
-                InlineKeyboardButton("✅ Написал", callback_data=f"contacted:{contact_id}"),
-                InlineKeyboardButton("✏️ Изменить", callback_data=f"edit:{contact_id}"),
-            ],
-            [
-                InlineKeyboardButton("⏸️ Пауза", callback_data=f"pause:{contact_id}"),
-                InlineKeyboardButton("❌ Удалить", callback_data=f"delete:{contact_id}"),
-            ],
-        ]
-    return InlineKeyboardMarkup(keyboard)
-
-
-def get_delete_confirm_keyboard(contact_id: str) -> InlineKeyboardMarkup:
-    """Create confirmation keyboard for delete action."""
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ Да, удалить", callback_data=f"delete_yes:{contact_id}"),
-            InlineKeyboardButton("❌ Отмена", callback_data=f"delete_no:{contact_id}"),
-        ],
-    ]
-    return InlineKeyboardMarkup(keyboard)
 
 
 # ============ MENU HANDLERS ============
@@ -75,11 +44,8 @@ async def handle_menu_add(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     await query.message.reply_text(
         "Отправь контакт в формате:\n\n"
-        "`@username описание контакта. частота`\n\n"
-        "Примеры:\n"
-        "• `@ivan коллега из маркетинга. раз в неделю`\n"
-        "• `@anna друг детства. раз в месяц`\n"
-        "• `@peter партнер по бизнесу`",
+        "`@username описание контакта`\n\n"
+        "Или перешли сообщение от нужного человека.",
         parse_mode="Markdown",
     )
 
@@ -124,6 +90,277 @@ async def handle_menu_search(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "• `контакты из Москвы`\n"
         "• `друзья`",
         parse_mode="Markdown",
+    )
+
+
+# ============ CONTACT CONFIRMATION HANDLERS ============
+
+async def handle_confirm_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle 'All correct' button - save contact and show reminder options."""
+    query = update.callback_query
+    await query.answer()
+
+    draft = context.user_data.get("draft_contact")
+    if not draft:
+        await query.message.edit_text("Ошибка: данные контакта не найдены.")
+        return
+
+    user_id = update.effective_user.id
+    username = draft["username"]
+    description = draft["description"]
+    tags = draft["tags"]
+
+    async with get_session() as session:
+        # Ensure user exists
+        user_repo = UserRepository(session)
+        await user_repo.get_or_create(
+            user_id=user_id,
+            username=update.effective_user.username,
+            first_name=update.effective_user.first_name,
+        )
+
+        contact_repo = ContactRepository(session)
+
+        # Check if contact already exists
+        existing = await contact_repo.get_by_username(user_id, username)
+        if existing:
+            await query.message.edit_text(
+                f"Контакт @{username} уже существует.",
+                parse_mode="Markdown",
+            )
+            del context.user_data["draft_contact"]
+            return
+
+        # Create contact without reminder (will be set later)
+        contact = await contact_repo.create(
+            user_id=user_id,
+            username=username,
+            description=description,
+            tags=tags,
+            reminder_frequency="monthly",  # Default, will be updated
+            next_reminder_date=date.today() + timedelta(days=30),
+            status="active",
+        )
+
+        # Store contact_id for reminder selection
+        context.user_data["setting_reminder_for"] = str(contact.id)
+
+    # Clear draft
+    del context.user_data["draft_contact"]
+
+    # Show reminder type selection
+    await query.message.edit_text(
+        format_contact_saved(username),
+        parse_mode="Markdown",
+        reply_markup=get_reminder_type_keyboard(str(contact.id)),
+    )
+
+
+async def handle_edit_draft(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle 'Edit' button on draft - ask for new description."""
+    query = update.callback_query
+    await query.answer()
+
+    draft = context.user_data.get("draft_contact")
+    if not draft:
+        await query.message.edit_text("Ошибка: данные контакта не найдены.")
+        return
+
+    # Move draft back to pending for re-entry
+    context.user_data["pending_contact"] = {
+        "username": draft["username"],
+        "first_name": draft["username"],  # Use username as fallback
+    }
+    del context.user_data["draft_contact"]
+
+    await query.message.edit_text(
+        format_edit_description_prompt(draft["username"]),
+        parse_mode="Markdown",
+    )
+
+
+# ============ REMINDER TYPE HANDLERS ============
+
+async def handle_reminder_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle reminder type selection."""
+    query = update.callback_query
+    await query.answer()
+
+    parts = query.data.split(":")
+    reminder_type = parts[1]
+    contact_id = parts[2]
+
+    if reminder_type == "back":
+        # Go back to reminder type selection
+        await query.message.edit_reply_markup(
+            reply_markup=get_reminder_type_keyboard(contact_id)
+        )
+        return
+
+    if reminder_type == "regular":
+        # Show interval options
+        await query.message.edit_text(
+            "Выбери интервал напоминания:",
+            reply_markup=get_regular_interval_keyboard(contact_id),
+        )
+
+    elif reminder_type == "onetime":
+        # Show date options
+        await query.message.edit_text(
+            "Когда напомнить?",
+            reply_markup=get_onetime_date_keyboard(contact_id),
+        )
+
+    elif reminder_type == "none":
+        # No reminder - pause the contact
+        async with get_session() as session:
+            repo = ContactRepository(session)
+            contact = await repo.get_by_id(UUID(contact_id))
+
+            if contact:
+                await repo.update(contact, status="paused", next_reminder_date=None)
+
+                await query.message.edit_text(
+                    format_no_reminder_set(contact.username),
+                    parse_mode="Markdown",
+                )
+                await send_contact_card(query.message, await repo.get_by_id(UUID(contact_id)))
+
+
+# ============ REGULAR INTERVAL HANDLERS ============
+
+async def handle_interval_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle regular interval selection."""
+    query = update.callback_query
+    await query.answer()
+
+    parts = query.data.split(":")
+    interval = parts[1]
+    contact_id = parts[2]
+
+    if interval == "custom":
+        # Ask for custom interval
+        context.user_data["awaiting_custom_interval"] = contact_id
+        await query.message.edit_text(
+            format_custom_interval_prompt(),
+            parse_mode="Markdown",
+        )
+        return
+
+    # Map interval to frequency
+    interval_map = {
+        "monthly": ("monthly", None, 30),
+        "bimonthly": ("custom", 60, 60),
+        "quarterly": ("custom", 90, 90),
+    }
+
+    frequency, custom_days, days = interval_map.get(interval, ("monthly", None, 30))
+    next_date = date.today() + timedelta(days=days)
+
+    async with get_session() as session:
+        repo = ContactRepository(session)
+        contact = await repo.get_by_id(UUID(contact_id))
+
+        if contact:
+            await repo.update(
+                contact,
+                reminder_frequency=frequency,
+                custom_interval_days=custom_days,
+                next_reminder_date=next_date,
+                status="active",
+            )
+
+            freq_text = format_frequency(frequency, custom_days)
+            await query.message.edit_text(
+                format_reminder_set(contact.username, freq_text, next_date.strftime("%d.%m.%Y")),
+                parse_mode="Markdown",
+            )
+            await send_contact_card(query.message, await repo.get_by_id(UUID(contact_id)))
+
+
+# ============ ONE-TIME DATE HANDLERS ============
+
+async def handle_onetime_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle one-time reminder date selection."""
+    query = update.callback_query
+    await query.answer()
+
+    parts = query.data.split(":")
+    date_option = parts[1]
+    contact_id = parts[2]
+
+    if date_option == "custom":
+        # Ask for custom date
+        context.user_data["awaiting_custom_date"] = contact_id
+        await query.message.edit_text(
+            format_custom_date_prompt(),
+            parse_mode="Markdown",
+        )
+        return
+
+    # Calculate date
+    today = date.today()
+    date_map = {
+        "tomorrow": today + timedelta(days=1),
+        "week": today + timedelta(days=7),
+        "month": today + timedelta(days=30),
+    }
+
+    reminder_date = date_map.get(date_option, today + timedelta(days=1))
+
+    async with get_session() as session:
+        repo = ContactRepository(session)
+        contact = await repo.get_by_id(UUID(contact_id))
+
+        if contact:
+            await repo.update(
+                contact,
+                reminder_frequency="one_time",
+                next_reminder_date=reminder_date,
+                one_time_date=reminder_date,
+                status="one_time",
+            )
+
+            await query.message.edit_text(
+                format_reminder_set(contact.username, "однократно", reminder_date.strftime("%d.%m.%Y")),
+                parse_mode="Markdown",
+            )
+            await send_contact_card(query.message, await repo.get_by_id(UUID(contact_id)))
+
+
+# ============ EXISTING CONTACT HANDLERS ============
+
+async def handle_update_description(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle 'Update description' for existing contact."""
+    query = update.callback_query
+    await query.answer()
+
+    contact_id = query.data.split(":")[1]
+
+    async with get_session() as session:
+        repo = ContactRepository(session)
+        contact = await repo.get_by_id(UUID(contact_id))
+
+        if contact:
+            context.user_data["editing_contact"] = contact_id
+            context.user_data["editing_field"] = "description"
+
+            await query.message.edit_text(
+                format_edit_description_prompt(contact.username),
+                parse_mode="Markdown",
+            )
+
+
+async def handle_update_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle 'Change reminder' for existing contact."""
+    query = update.callback_query
+    await query.answer()
+
+    contact_id = query.data.split(":")[1]
+
+    await query.message.edit_text(
+        "Выбери тип напоминания:",
+        reply_markup=get_reminder_type_keyboard(contact_id),
     )
 
 
@@ -332,43 +569,17 @@ async def handle_delete_cancel(update: Update, context: ContextTypes.DEFAULT_TYP
 
 # ============ HELPER FUNCTIONS ============
 
-def _format_contact_card_text(contact, prefix: str = "") -> str:
-    """Format contact card text with markdown escaping."""
-    # Format status/date info
-    if contact.status == "paused":
-        status_text = "⏸️ На паузе"
-    elif contact.status == "one_time":
-        date_str = (
-            contact.one_time_date.strftime("%d.%m")
-            if contact.one_time_date
-            else contact.next_reminder_date.strftime("%d.%m") if contact.next_reminder_date else "?"
-        )
-        status_text = f"📅 Напоминание: {date_str}"
-    else:
-        next_date = contact.next_reminder_date.strftime("%d.%m") if contact.next_reminder_date else "?"
-        status_text = f"🔔 Следующее: {next_date}"
-
-    tags_text = " ".join(contact.tags) if contact.tags else ""
-    desc_text = contact.description or ""
-
-    # Escape markdown in user-provided text
-    safe_desc = escape_markdown(desc_text, version=1) if desc_text else ""
-    safe_tags = escape_markdown(tags_text, version=1) if tags_text else ""
-
-    # Build card: username, description, tags, status
-    text = f"{prefix}*@{contact.username}*\n"
-    if safe_desc:
-        text += f"{safe_desc}\n"
-    if safe_tags:
-        text += f"{safe_tags}\n"
-    text += status_text
-
-    return text
-
-
 async def send_contact_card(message, contact, edit: bool = False, prefix: str = "") -> None:
     """Send or edit a contact card with inline buttons."""
-    text = _format_contact_card_text(contact, prefix)
+    text = format_contact_card(
+        username=contact.username,
+        description=contact.description,
+        tags=contact.tags,
+        status=contact.status,
+        next_reminder_date=contact.next_reminder_date,
+        one_time_date=contact.one_time_date,
+        prefix=prefix,
+    )
     keyboard = get_contact_keyboard(str(contact.id), contact.status)
 
     if edit:
@@ -379,7 +590,14 @@ async def send_contact_card(message, contact, edit: bool = False, prefix: str = 
 
 async def send_contact_card_to_chat(bot, chat_id: int, contact) -> None:
     """Send contact card to a specific chat (for scheduler jobs)."""
-    text = _format_contact_card_text(contact)
+    text = format_contact_card(
+        username=contact.username,
+        description=contact.description,
+        tags=contact.tags,
+        status=contact.status,
+        next_reminder_date=contact.next_reminder_date,
+        one_time_date=contact.one_time_date,
+    )
     keyboard = get_contact_keyboard(str(contact.id), contact.status)
     await bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard, parse_mode="Markdown")
 
@@ -391,6 +609,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     query = update.callback_query
     data = query.data
 
+    # Menu actions
     if data.startswith("menu:"):
         action = data.split(":")[1]
         if action == "add":
@@ -400,24 +619,43 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         elif action == "search":
             await handle_menu_search(update, context)
 
+    # Contact confirmation
+    elif data == "confirm_contact":
+        await handle_confirm_contact(update, context)
+    elif data == "edit_draft":
+        await handle_edit_draft(update, context)
+
+    # Reminder type selection
+    elif data.startswith("reminder_type:"):
+        await handle_reminder_type(update, context)
+
+    # Regular interval selection
+    elif data.startswith("interval:"):
+        await handle_interval_selection(update, context)
+
+    # One-time date selection
+    elif data.startswith("onetime:"):
+        await handle_onetime_date(update, context)
+
+    # Existing contact options
+    elif data.startswith("update_desc:"):
+        await handle_update_description(update, context)
+    elif data.startswith("update_reminder:"):
+        await handle_update_reminder(update, context)
+
+    # Contact actions
     elif data.startswith("contacted:"):
         await handle_contacted_callback(update, context)
-
     elif data.startswith("pause:"):
         await handle_pause_callback(update, context)
-
     elif data.startswith("resume:"):
         await handle_resume_callback(update, context)
-
     elif data.startswith("edit:"):
         await handle_edit_callback(update, context)
-
     elif data.startswith("delete:"):
         await handle_delete_callback(update, context)
-
     elif data.startswith("delete_yes:"):
         await handle_delete_confirm(update, context)
-
     elif data.startswith("delete_no:"):
         await handle_delete_cancel(update, context)
 

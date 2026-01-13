@@ -2,11 +2,13 @@
 Telegram Application setup and message routing.
 """
 import logging
+from datetime import date, timedelta
+from uuid import UUID
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
-from src.bot.handlers.callbacks import get_callback_handler
+from src.bot.handlers.callbacks import get_callback_handler, send_contact_card
 from src.bot.handlers.contacts import (
     get_contact_handlers,
     handle_add_from_prompt,
@@ -18,7 +20,11 @@ from src.bot.handlers.forwarded import (
 )
 from src.bot.handlers.search import perform_search
 from src.bot.handlers.start import get_start_handlers
+from src.bot.messages import format_reminder_set
+from src.bot.parsers.frequency import format_frequency, parse_date
 from src.config import settings
+from src.db.engine import get_session
+from src.db.repositories.contacts import ContactRepository
 from src.scheduler.setup import setup_scheduler
 
 logger = logging.getLogger(__name__)
@@ -27,7 +33,7 @@ logger = logging.getLogger(__name__)
 async def route_message(update: Update, context) -> None:
     """
     Main message router for text messages.
-    Handles pending operations (add, search, edit).
+    Handles pending operations (add, search, edit, custom interval/date).
     """
     text = update.message.text
     if not text:
@@ -37,23 +43,33 @@ async def route_message(update: Update, context) -> None:
     if await handle_pending_contact_description(update, context):
         return
 
-    # 2. Check for awaiting_add (after /add or button press)
+    # 2. Check for awaiting custom interval input
+    if context.user_data.get("awaiting_custom_interval"):
+        await handle_custom_interval_input(update, context)
+        return
+
+    # 3. Check for awaiting custom date input
+    if context.user_data.get("awaiting_custom_date"):
+        await handle_custom_date_input(update, context)
+        return
+
+    # 4. Check for awaiting_add (after /add or button press)
     if context.user_data.get("awaiting_add"):
         await handle_add_from_prompt(update, context)
         return
 
-    # 3. Check for awaiting_search (after /search)
+    # 5. Check for awaiting_search (after /search)
     if context.user_data.get("awaiting_search"):
         context.user_data.pop("awaiting_search", None)
         await perform_search(update, context, text)
         return
 
-    # 4. Check for editing_contact (after /edit or ✏️ button)
+    # 6. Check for editing_contact (after /edit or ✏️ button)
     if context.user_data.get("editing_contact"):
         await handle_edit_from_prompt(update, context)
         return
 
-    # 5. Unknown message - show help
+    # 7. Unknown message - show help
     await update.message.reply_text(
         "Используй команды:\n"
         "/add — добавить контакт\n"
@@ -63,25 +79,131 @@ async def route_message(update: Update, context) -> None:
     )
 
 
+async def handle_custom_interval_input(update: Update, context) -> None:
+    """Handle custom interval input (number of days)."""
+    text = update.message.text.strip()
+    contact_id = context.user_data.get("awaiting_custom_interval")
+
+    # Clear the flag
+    del context.user_data["awaiting_custom_interval"]
+
+    # Validate input
+    try:
+        days = int(text)
+        if days < 1 or days > 365:
+            raise ValueError("Out of range")
+    except ValueError:
+        await update.message.reply_text(
+            "Введи число от 1 до 365.\n"
+            "Например: `45`",
+            parse_mode="Markdown",
+        )
+        context.user_data["awaiting_custom_interval"] = contact_id
+        return
+
+    next_date = date.today() + timedelta(days=days)
+
+    async with get_session() as session:
+        repo = ContactRepository(session)
+        contact = await repo.get_by_id(UUID(contact_id))
+
+        if contact:
+            await repo.update(
+                contact,
+                reminder_frequency="custom",
+                custom_interval_days=days,
+                next_reminder_date=next_date,
+                status="active",
+            )
+
+            freq_text = format_frequency("custom", days)
+            await update.message.reply_text(
+                format_reminder_set(contact.username, freq_text, next_date.strftime("%d.%m.%Y")),
+                parse_mode="Markdown",
+            )
+            await send_contact_card(update.message, await repo.get_by_id(UUID(contact_id)))
+
+
+async def handle_custom_date_input(update: Update, context) -> None:
+    """Handle custom date input for one-time reminder using AI parsing."""
+    from src.services.ai_service import AIService
+
+    text = update.message.text.strip()
+    contact_id = context.user_data.get("awaiting_custom_date")
+
+    # Clear the flag
+    del context.user_data["awaiting_custom_date"]
+
+    # First try simple regex parsing
+    reminder_date = parse_date(text)
+
+    # If simple parsing failed, try AI
+    if not reminder_date:
+        ai_service = AIService()
+        reminder_date = await ai_service.parse_date(text)
+
+    if not reminder_date:
+        await update.message.reply_text(
+            "Не удалось распознать дату.\n\n"
+            "Попробуй написать иначе:\n"
+            "• `завтра`\n"
+            "• `через неделю`\n"
+            "• `15 февраля`\n"
+            "• `в пятницу`\n"
+            "• `25.02.2025`",
+            parse_mode="Markdown",
+        )
+        context.user_data["awaiting_custom_date"] = contact_id
+        return
+
+    if reminder_date <= date.today():
+        await update.message.reply_text(
+            "Дата должна быть в будущем.\n"
+            "Введи другую дату:",
+            parse_mode="Markdown",
+        )
+        context.user_data["awaiting_custom_date"] = contact_id
+        return
+
+    async with get_session() as session:
+        repo = ContactRepository(session)
+        contact = await repo.get_by_id(UUID(contact_id))
+
+        if contact:
+            await repo.update(
+                contact,
+                reminder_frequency="one_time",
+                next_reminder_date=reminder_date,
+                one_time_date=reminder_date,
+                status="one_time",
+            )
+
+            await update.message.reply_text(
+                format_reminder_set(contact.username, "однократно", reminder_date.strftime("%d.%m.%Y")),
+                parse_mode="Markdown",
+            )
+            await send_contact_card(update.message, await repo.get_by_id(UUID(contact_id)))
+
+
 async def cancel_command(update: Update, context) -> None:
     """Handle /cancel command - cancel pending operations"""
     cancelled = False
 
-    if "pending_contact" in context.user_data:
-        del context.user_data["pending_contact"]
-        cancelled = True
+    keys_to_clear = [
+        "pending_contact",
+        "draft_contact",
+        "awaiting_add",
+        "awaiting_search",
+        "editing_contact",
+        "awaiting_custom_interval",
+        "awaiting_custom_date",
+        "setting_reminder_for",
+    ]
 
-    if "awaiting_add" in context.user_data:
-        del context.user_data["awaiting_add"]
-        cancelled = True
-
-    if "awaiting_search" in context.user_data:
-        del context.user_data["awaiting_search"]
-        cancelled = True
-
-    if "editing_contact" in context.user_data:
-        del context.user_data["editing_contact"]
-        cancelled = True
+    for key in keys_to_clear:
+        if key in context.user_data:
+            del context.user_data[key]
+            cancelled = True
 
     if cancelled:
         await update.message.reply_text("Операция отменена.")

@@ -5,6 +5,9 @@ Extracts username from forwarded message and prompts user for description.
 from telegram import Update
 from telegram.ext import ContextTypes, MessageHandler, filters
 
+from src.bot.keyboards import get_confirm_contact_keyboard, get_existing_contact_keyboard
+from src.bot.messages import format_contact_preview, format_description_prompt, format_existing_contact_found
+
 
 async def handle_forwarded_message(
     update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -50,7 +53,6 @@ async def handle_forwarded_message(
         return
 
     # Check if contact already exists
-    from src.bot.handlers.callbacks import send_contact_card
     from src.db.engine import get_session
     from src.db.repositories.contacts import ContactRepository
 
@@ -61,11 +63,12 @@ async def handle_forwarded_message(
         existing = await contact_repo.get_by_username(user_id, username)
 
         if existing:
+            # Show existing contact with update options
             await update.message.reply_text(
-                f"📇 *@{username}* уже в твоих контактах:",
+                format_existing_contact_found(username),
                 parse_mode="Markdown",
+                reply_markup=get_existing_contact_keyboard(str(existing.id)),
             )
-            await send_contact_card(update.message, existing)
             return
 
     # Store pending contact info in user_data for follow-up
@@ -74,15 +77,8 @@ async def handle_forwarded_message(
         "first_name": first_name,
     }
 
-    # Escape markdown in user-provided text
-    from telegram.helpers import escape_markdown
-    safe_first_name = escape_markdown(first_name, version=1)
-
     await update.message.reply_text(
-        f"📇 Добавить *@{username}* в контакты?\n\n"
-        f"Напиши описание:\n"
-        f"`{safe_first_name} — коллега из IT. раз в неделю`\n\n"
-        f"Или /cancel для отмены.",
+        format_description_prompt(username, first_name),
         parse_mode="Markdown",
     )
 
@@ -92,18 +88,11 @@ async def handle_pending_contact_description(
 ) -> bool:
     """
     Handle description input after forwarded message.
-    Uses LLM to parse description, tags, and frequency.
+    Uses LLM to parse description and tags.
+    Shows preview with confirmation buttons.
 
     Returns True if there was a pending contact and it was processed.
     """
-    from datetime import date as date_type
-
-    from telegram.helpers import escape_markdown
-
-    from src.bot.parsers.frequency import calculate_next_reminder, format_frequency
-    from src.db.engine import get_session
-    from src.db.repositories.contacts import ContactRepository
-    from src.db.repositories.users import UserRepository
     from src.services.ai_service import AIService
 
     pending = context.user_data.get("pending_contact")
@@ -120,95 +109,34 @@ async def handle_pending_contact_description(
 
     username = pending["username"]
 
-    # Clear pending
+    # Parse input using LLM (description, tags only - no frequency here)
+    ai_service = AIService()
+    parsed = await ai_service.parse_contact_input(text)
+
+    if not parsed:
+        # Fallback to simple mode
+        description = text
+        tags = []
+    else:
+        description = parsed.description
+        tags = parsed.tags
+
+    # Store draft contact for confirmation
+    context.user_data["draft_contact"] = {
+        "username": username,
+        "description": description,
+        "tags": tags,
+    }
+
+    # Clear pending, keep draft
     del context.user_data["pending_contact"]
 
-    user_id = update.effective_user.id
-
-    async with get_session() as session:
-        # Ensure user exists
-        user_repo = UserRepository(session)
-        await user_repo.get_or_create(
-            user_id=user_id,
-            username=update.effective_user.username,
-            first_name=update.effective_user.first_name,
-        )
-
-        contact_repo = ContactRepository(session)
-
-        # Check if contact already exists
-        existing = await contact_repo.get_by_username(user_id, username)
-        if existing:
-            await update.message.reply_text(
-                f"Контакт @{username} уже существует.\n"
-                f"Используй `/edit @{username}` для редактирования.",
-                parse_mode="Markdown",
-            )
-            return True
-
-        # Parse input using LLM (description, tags, frequency, date)
-        ai_service = AIService()
-        parsed = await ai_service.parse_contact_input(text)
-
-        if not parsed:
-            # Fallback to simple mode
-            description = text
-            tags = []
-            frequency = "biweekly"
-            custom_days = None
-            one_time_date = None
-        else:
-            description = parsed.description
-            tags = parsed.tags
-            frequency = parsed.frequency_type
-            custom_days = parsed.custom_days
-            one_time_date = None
-
-            # Parse reminder_date if provided
-            if parsed.reminder_date:
-                try:
-                    one_time_date = date_type.fromisoformat(parsed.reminder_date)
-                except ValueError:
-                    pass
-
-        # Calculate next reminder
-        if frequency == "one_time" and one_time_date:
-            next_reminder = one_time_date
-            status = "one_time"
-        else:
-            next_reminder = calculate_next_reminder(frequency, custom_days)
-            status = "active"
-
-        # Create contact
-        await contact_repo.create(
-            user_id=user_id,
-            username=username,
-            description=description,
-            tags=tags,
-            reminder_frequency=frequency,
-            custom_interval_days=custom_days,
-            next_reminder_date=next_reminder,
-            one_time_date=one_time_date,
-            status=status,
-        )
-
-        # Format response
-        freq_text = format_frequency(frequency, custom_days)
-        tags_text = " ".join(tags) if tags else "—"
-
-        # Escape markdown in user-provided text
-        safe_desc = escape_markdown(description, version=1)
-        safe_tags = escape_markdown(tags_text, version=1)
-
-        await update.message.reply_text(
-            f"✅ Контакт добавлен!\n\n"
-            f"*@{username}*\n"
-            f"{safe_desc}\n\n"
-            f"Теги: {safe_tags}\n"
-            f"Напоминание: {freq_text}\n"
-            f"Следующее: {next_reminder.strftime('%d.%m.%Y')}",
-            parse_mode="Markdown",
-        )
+    # Show preview with confirmation buttons
+    await update.message.reply_text(
+        format_contact_preview(username, description, tags),
+        parse_mode="Markdown",
+        reply_markup=get_confirm_contact_keyboard(),
+    )
 
     return True
 
