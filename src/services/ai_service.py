@@ -93,7 +93,7 @@ class AIService:
                         "content": f"""Ты парсер контактной информации. Сегодня: {today.isoformat()} ({today.strftime('%A')}).
 
 Извлеки из текста:
-1. **description** — описание контакта БЕЗ информации о частоте/дате напоминания
+1. **description** — описание контакта БЕЗ информации о частоте/дате напоминания. ВАЖНО: сохраняй все ссылки (URLs) в описании!
 2. **tags** — теги на основе описания (профессия, сфера, отношения, локация). Формат: #тег. Максимум 5.
 3. **frequency_type** — частота напоминаний:
    - "daily" — каждый день, ежедневно
@@ -114,7 +114,8 @@ class AIService:
 - "коллега из маркетинга" → description="коллега из маркетинга", frequency_type="biweekly"
 - "друг. раз в месяц" → description="друг", frequency_type="monthly"
 - "инвестор. напомни завтра" → description="инвестор", frequency_type="one_time", reminder_date=завтрашняя дата
-- "партнёр. через 10 дней" → description="партнёр", frequency_type="custom", custom_days=10""",
+- "партнёр. через 10 дней" → description="партнёр", frequency_type="custom", custom_days=10
+- "ментор https://getmentor.dev/profile/123" → description="ментор https://getmentor.dev/profile/123", frequency_type="biweekly" (ссылка сохранена!)""",
                     },
                     {"role": "user", "content": text},
                 ],
@@ -182,6 +183,8 @@ class AIService:
 - "раз в месяц" → меняем только частоту, НЕ трогаем описание и теги
 - "новый дизайнер" → меняем только описание, НЕ трогаем частоту
 - "#друг #москва" → меняем только теги
+
+ВАЖНО: Сохраняй все ссылки (URLs) в описании! Не удаляй их.
 
 Частоты: daily, weekly, biweekly, monthly, custom, one_time
 Для дат (сегодня, завтра, 15.01) используй one_time и reminder_date в формате YYYY-MM-DD.""",
