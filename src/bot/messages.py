@@ -123,7 +123,7 @@ def format_description_prompt(username: str, display_name: str) -> str:
     """Format prompt for contact description."""
     safe_display_name = escape_markdown(display_name, version=1)
     return (
-        f"📇 Добавить *{safe_display_name}* (@{username}) в контакты?\n\n"
+        f"📇 *{safe_display_name}* (@{username})\n\n"
         f"Напиши описание:\n"
         f"`коллега из IT`\n\n"
         f"Или /cancel для отмены."
