@@ -229,18 +229,14 @@ async def handle_edit_from_prompt(
             return True
 
         updates = {}
-        response_parts = [f"✅ Контакт @{contact.username} обновлён:\n"]
 
         # Update description if requested
         if parsed.update_description and parsed.new_description:
             updates["description"] = parsed.new_description
-            response_parts.append(f"Описание: {parsed.new_description}")
 
         # Update tags if requested
         if parsed.update_tags and parsed.new_tags is not None:
             updates["tags"] = parsed.new_tags
-            tags_str = " ".join(parsed.new_tags) if parsed.new_tags else "—"
-            response_parts.append(f"Теги: {tags_str}")
 
         # Update frequency if requested
         if parsed.update_frequency and parsed.new_frequency_type:
@@ -262,14 +258,28 @@ async def handle_edit_from_prompt(
                 if contact.status == "one_time":
                     updates["status"] = "active"
 
-            freq_text = format_frequency(parsed.new_frequency_type, parsed.new_custom_days)
-            response_parts.append(f"Частота: {freq_text}")
-            if "next_reminder_date" in updates:
-                response_parts.append(f"Следующее: {updates['next_reminder_date'].strftime('%d.%m.%Y')}")
-
         if updates:
             await contact_repo.update(contact, **updates)
-            await update.message.reply_text("\n".join(response_parts))
+
+            # Refresh contact to get updated values
+            updated_contact = await contact_repo.get_by_id(contact.id)
+
+            # Format full contact card
+            safe_username = escape_markdown(updated_contact.username, version=1)
+            safe_desc = escape_markdown(updated_contact.description, version=1) if updated_contact.description else "не указано"
+            safe_tags = escape_markdown(" ".join(updated_contact.tags), version=1) if updated_contact.tags else "—"
+            freq_text = format_frequency(updated_contact.reminder_frequency, updated_contact.custom_interval_days)
+            next_date = updated_contact.next_reminder_date.strftime("%d.%m.%Y") if updated_contact.next_reminder_date else "—"
+
+            await update.message.reply_text(
+                f"✅ *Контакт обновлён!*\n\n"
+                f"*@{safe_username}*\n"
+                f"📝 {safe_desc}\n"
+                f"🏷 {safe_tags}\n\n"
+                f"🔔 Напоминание: {freq_text}\n"
+                f"📅 Следующее: {next_date}",
+                parse_mode="Markdown",
+            )
         else:
             await update.message.reply_text("Не удалось определить, что обновить.")
 
@@ -297,11 +307,13 @@ async def edit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             safe_desc = escape_markdown(contact.description, version=1) if contact.description else "не указано"
             safe_tags = escape_markdown(' '.join(contact.tags), version=1) if contact.tags else "—"
             safe_username = escape_markdown(username, version=1)
+            freq_text = format_frequency(contact.reminder_frequency, contact.custom_interval_days)
 
             await update.message.reply_text(
                 f"✏️ *Редактирование @{safe_username}*\n\n"
-                f"Текущее описание: _{safe_desc}_\n"
-                f"Теги: {safe_tags}\n\n"
+                f"📝 Описание: _{safe_desc}_\n"
+                f"🏷 Теги: {safe_tags}\n"
+                f"🔔 Напоминание: {freq_text}\n\n"
                 "Отправь новые данные:\n"
                 "• Новое описание\n"
                 "• Или новую частоту (раз в неделю, раз в месяц...)\n"

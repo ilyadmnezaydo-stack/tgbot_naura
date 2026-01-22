@@ -542,10 +542,17 @@ async def handle_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
         context.user_data["editing_contact"] = contact_id
 
-        # Escape username for Markdown (underscores break parsing)
-        escaped_username = contact.username.replace("_", "\\_") if contact.username else "контакт"
+        # Escape markdown in user-provided text
+        escaped_username = escape_markdown(contact.username, version=1) if contact.username else "контакт"
+        safe_desc = escape_markdown(contact.description, version=1) if contact.description else "не указано"
+        safe_tags = escape_markdown(" ".join(contact.tags), version=1) if contact.tags else "—"
+        freq_text = format_frequency(contact.reminder_frequency, contact.custom_interval_days)
+
         await query.message.reply_text(
-            f"Редактирование @{escaped_username}\n\n"
+            f"✏️ *Редактирование @{escaped_username}*\n\n"
+            f"📝 Описание: _{safe_desc}_\n"
+            f"🏷 Теги: {safe_tags}\n"
+            f"🔔 Напоминание: {freq_text}\n\n"
             f"Отправь новые данные:\n"
             f"• Новое описание\n"
             f"• Или новую частоту (раз в неделю, раз в месяц...)\n"
