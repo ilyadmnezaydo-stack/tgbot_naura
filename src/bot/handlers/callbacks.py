@@ -7,7 +7,7 @@ from uuid import UUID
 import pytz
 from telegram import Update
 from telegram.ext import ContextTypes, CallbackQueryHandler
-from telegram.helpers import escape_markdown
+from html import escape as html_escape
 
 from src.bot.keyboards import (
     get_main_menu_keyboard,
@@ -45,9 +45,9 @@ async def handle_menu_add(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     await query.message.reply_text(
         "Отправь контакт в формате:\n\n"
-        "`@username описание контакта`\n\n"
+        "<code>@username описание контакта</code>\n\n"
         "Или перешли сообщение от нужного человека.",
-        parse_mode="Markdown",
+        parse_mode="HTML",
     )
 
 
@@ -65,13 +65,13 @@ async def handle_menu_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if not contacts:
             await query.message.reply_text(
                 "У тебя пока нет контактов.\n"
-                "Нажми *➕ Добавить контакт* чтобы добавить первый.",
-                parse_mode="Markdown",
+                "Нажми <b>➕ Добавить контакт</b> чтобы добавить первый.",
+                parse_mode="HTML",
                 reply_markup=get_main_menu_keyboard(),
             )
             return
 
-        await query.message.reply_text(f"📋 *Твои контакты ({len(contacts)}):*", parse_mode="Markdown")
+        await query.message.reply_text(f"📋 <b>Твои контакты ({len(contacts)}):</b>", parse_mode="HTML")
 
         for contact in contacts:
             await send_contact_card(query.message, contact)
@@ -87,10 +87,10 @@ async def handle_menu_search(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.message.reply_text(
         "Введи поисковый запрос.\n\n"
         "Примеры:\n"
-        "• `кто работает в IT?`\n"
-        "• `контакты из Москвы`\n"
-        "• `друзья`",
-        parse_mode="Markdown",
+        "• <code>кто работает в IT?</code>\n"
+        "• <code>контакты из Москвы</code>\n"
+        "• <code>друзья</code>",
+        parse_mode="HTML",
     )
 
 
@@ -126,10 +126,9 @@ async def handle_confirm_contact(update: Update, context: ContextTypes.DEFAULT_T
         # Check if contact already exists
         existing = await contact_repo.get_by_username(user_id, username)
         if existing:
-            safe_username = escape_markdown(username, version=1) if username else "контакт"
             await query.message.edit_text(
-                f"Контакт @{safe_username} уже существует.",
-                parse_mode="Markdown",
+                f"Контакт @{username} уже существует.",
+                parse_mode="HTML",
             )
             del context.user_data["draft_contact"]
             return
@@ -155,7 +154,7 @@ async def handle_confirm_contact(update: Update, context: ContextTypes.DEFAULT_T
     # Show reminder type selection
     await query.message.edit_text(
         format_contact_saved(username),
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=get_reminder_type_keyboard(str(contact.id)),
     )
 
@@ -179,7 +178,7 @@ async def handle_edit_draft(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     await query.message.edit_text(
         format_edit_description_prompt(draft["username"]),
-        parse_mode="Markdown",
+        parse_mode="HTML",
     )
 
 
@@ -226,7 +225,7 @@ async def handle_reminder_type(update: Update, context: ContextTypes.DEFAULT_TYP
 
                 await query.message.edit_text(
                     format_no_reminder_set(contact.username),
-                    parse_mode="Markdown",
+                    parse_mode="HTML",
                 )
                 await send_contact_card(query.message, await repo.get_by_id(UUID(contact_id)))
 
@@ -247,7 +246,7 @@ async def handle_interval_selection(update: Update, context: ContextTypes.DEFAUL
         context.user_data["awaiting_custom_interval"] = contact_id
         await query.message.edit_text(
             format_custom_interval_prompt(),
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
         return
 
@@ -277,7 +276,7 @@ async def handle_interval_selection(update: Update, context: ContextTypes.DEFAUL
             freq_text = format_frequency(frequency, custom_days)
             await query.message.edit_text(
                 format_reminder_set(contact.username, freq_text, next_date.strftime("%d.%m.%Y")),
-                parse_mode="Markdown",
+                parse_mode="HTML",
             )
             await send_contact_card(query.message, await repo.get_by_id(UUID(contact_id)))
 
@@ -298,7 +297,7 @@ async def handle_onetime_date(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data["awaiting_custom_date"] = contact_id
         await query.message.edit_text(
             format_custom_date_prompt(),
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
         return
 
@@ -327,7 +326,7 @@ async def handle_onetime_date(update: Update, context: ContextTypes.DEFAULT_TYPE
 
             await query.message.edit_text(
                 format_reminder_set(contact.username, "однократно", reminder_date.strftime("%d.%m.%Y")),
-                parse_mode="Markdown",
+                parse_mode="HTML",
             )
             await send_contact_card(query.message, await repo.get_by_id(UUID(contact_id)))
 
@@ -361,10 +360,9 @@ async def handle_add_username_yes(update: Update, context: ContextTypes.DEFAULT_
         "display_name": username,  # No display_name available from @mention
     }
 
-    safe_username = escape_markdown(username, version=1) if username else "контакт"
     await query.message.edit_text(
-        f"Введи описание для @{safe_username}:",
-        parse_mode="Markdown",
+        f"Введи описание для @{username}:",
+        parse_mode="HTML",
     )
 
 
@@ -395,7 +393,7 @@ async def handle_update_description(update: Update, context: ContextTypes.DEFAUL
 
             await query.message.edit_text(
                 format_edit_description_prompt(contact.username),
-                parse_mode="Markdown",
+                parse_mode="HTML",
             )
 
 
@@ -542,23 +540,22 @@ async def handle_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
         context.user_data["editing_contact"] = contact_id
 
-        # Escape markdown in user-provided text
-        escaped_username = escape_markdown(contact.username, version=1) if contact.username else "контакт"
-        safe_desc = escape_markdown(contact.description, version=1) if contact.description else "не указано"
-        safe_tags = escape_markdown(" ".join(contact.tags), version=1) if contact.tags else "—"
+        # Escape HTML in user-provided text
+        safe_desc = html_escape(contact.description) if contact.description else "не указано"
+        safe_tags = html_escape(" ".join(contact.tags)) if contact.tags else "—"
         freq_text = format_frequency(contact.reminder_frequency, contact.custom_interval_days)
 
         await query.message.reply_text(
-            f"✏️ *Редактирование @{escaped_username}*\n\n"
-            f"📝 Описание: _{safe_desc}_\n"
+            f"✏️ <b>Редактирование @{contact.username}</b>\n\n"
+            f"📝 Описание: <i>{safe_desc}</i>\n"
             f"🏷 Теги: {safe_tags}\n"
             f"🔔 Напоминание: {freq_text}\n\n"
             f"Отправь новые данные:\n"
             f"• Новое описание\n"
             f"• Или новую частоту (раз в неделю, раз в месяц...)\n"
             f"• Или теги (#tag1 #tag2)\n\n"
-            f"Отправь `/cancel` для отмены.",
-            parse_mode="Markdown",
+            f"Отправь /cancel для отмены.",
+            parse_mode="HTML",
         )
 
 
@@ -641,9 +638,9 @@ async def send_contact_card(message, contact, edit: bool = False, prefix: str = 
     keyboard = get_contact_keyboard(str(contact.id), contact.status)
 
     if edit:
-        await message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+        await message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     else:
-        await message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
+        await message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
 
 
 async def send_contact_card_to_chat(bot, chat_id: int, contact) -> None:
@@ -658,7 +655,7 @@ async def send_contact_card_to_chat(bot, chat_id: int, contact) -> None:
         display_name=contact.display_name,
     )
     keyboard = get_contact_keyboard(str(contact.id), contact.status)
-    await bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard, parse_mode="Markdown")
+    await bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard, parse_mode="HTML")
 
 
 # ============ CALLBACK ROUTER ============

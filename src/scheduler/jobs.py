@@ -45,8 +45,8 @@ async def morning_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 # Send header
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text="☀️ *Доброе утро!* Сегодня стоит написать:",
-                    parse_mode="Markdown",
+                    text="☀️ <b>Доброе утро!</b> Сегодня стоит написать:",
+                    parse_mode="HTML",
                 )
 
                 # Send each contact as a card with buttons
@@ -89,8 +89,8 @@ async def evening_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 # Send header
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text="🌙 *Вечернее напоминание!*\nТы ещё не отметил, что связался с:",
-                    parse_mode="Markdown",
+                    text="🌙 <b>Вечернее напоминание!</b>\nТы ещё не отметил, что связался с:",
+                    parse_mode="HTML",
                 )
 
                 # Send each contact as a card with buttons
@@ -132,7 +132,7 @@ async def weekly_stats_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 contacted_count = await repo.get_contacts_contacted_this_week(user_id)
 
                 # Build message
-                message_parts = ["📊 *Твоя неделя в цифрах:*\n"]
+                message_parts = ["📊 <b>Твоя неделя в цифрах:</b>\n"]
                 message_parts.append(f"👥 Всего контактов: {total_contacts}")
                 message_parts.append(f"✅ Активных: {active_contacts}")
                 if paused_contacts:
@@ -150,7 +150,7 @@ async def weekly_stats_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 await context.bot.send_message(
                     chat_id=user_id,
                     text="\n".join(message_parts),
-                    parse_mode="Markdown",
+                    parse_mode="HTML",
                 )
                 logger.info(f"Sent weekly stats to user {user_id}")
 

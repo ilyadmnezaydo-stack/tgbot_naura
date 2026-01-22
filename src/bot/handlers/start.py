@@ -13,7 +13,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 Я помогу тебе не терять связь с важными людьми.
 
-*Как это работает:*
+<b>Как это работает:</b>
 1️⃣ Добавь контакт с описанием
 2️⃣ Я напомню, когда пора написать
 3️⃣ Отметь, что связался — и счётчик обновится
@@ -22,7 +22,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     await update.message.reply_text(
         welcome_text,
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=get_main_menu_keyboard(),
     )
 
@@ -37,7 +37,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /help command - full help message"""
-    help_text = """*Команды*
+    help_text = """<b>Команды</b>
 
 /add — добавить контакт
 /list — список контактов
@@ -45,46 +45,46 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 /edit @username — редактировать
 /cancel — отменить операцию
 
-*Добавление контакта*
+<b>Добавление контакта</b>
 1. Нажми /add
-2. Отправь: `@username описание. частота`
+2. Отправь: <code>@username описание. частота</code>
 
 Примеры:
-• `@anna маркетолог. раз в неделю`
-• `@ivan друг из универа. раз в месяц`
-• `@lena инвестор`
+• <code>@anna маркетолог. раз в неделю</code>
+• <code>@ivan друг из универа. раз в месяц</code>
+• <code>@lena инвестор</code>
 
 💡 Без частоты — напомню раз в 2 недели.
 
-*Кнопки у контактов*
+<b>Кнопки у контактов</b>
 ✅ — отметить, что связался
 ✏️ — изменить описание/частоту
 ⏸️ — приостановить напоминания
 ▶️ — возобновить
 ❌ — удалить
 
-*Поиск*
+<b>Поиск</b>
 /search → введи запрос
-• `кто работает в IT?`
-• `друзья из Москвы`
+• <code>кто работает в IT?</code>
+• <code>друзья из Москвы</code>
 
-*Пересланные сообщения*
+<b>Пересланные сообщения</b>
 Перешли сообщение от человека → я предложу добавить его в контакты.
 
-*Напоминания*
+<b>Напоминания</b>
 • 11:00 — утреннее
 • 19:00 — вечернее (если не отметил)
 • Воскресенье — статистика за неделю
 
-*Частоты*
-• `ежедневно` / `каждый день`
-• `раз в неделю`
-• `раз в 2 недели` (по умолчанию)
-• `раз в месяц`
-• `через X дней`
-• Дата: `15.01.2025`"""
+<b>Частоты</b>
+• <code>ежедневно</code> / <code>каждый день</code>
+• <code>раз в неделю</code>
+• <code>раз в 2 недели</code> (по умолчанию)
+• <code>раз в месяц</code>
+• <code>через X дней</code>
+• Дата: <code>15.01.2025</code>"""
 
-    await update.message.reply_text(help_text, parse_mode="Markdown")
+    await update.message.reply_text(help_text, parse_mode="HTML")
 
 
 def get_start_handlers() -> list:

@@ -25,8 +25,8 @@ async def perform_search(
         if not all_contacts:
             await update.message.reply_text(
                 "У тебя пока нет контактов для поиска.\n"
-                "Добавь первый: `/add`",
-                parse_mode="Markdown",
+                "Добавь первый: /add",
+                parse_mode="HTML",
             )
             return
 
@@ -42,14 +42,14 @@ async def perform_search(
         if not matching:
             await update.message.reply_text(
                 "🔍 Не нашёл подходящих контактов.\n"
-                "Попробуй изменить запрос или посмотри `/list`",
-                parse_mode="Markdown",
+                "Попробуй изменить запрос или посмотри /list",
+                parse_mode="HTML",
             )
             return
 
         await update.message.reply_text(
-            f"🔍 *Найдено ({len(matching)}):*",
-            parse_mode="Markdown",
+            f"🔍 <b>Найдено ({len(matching)}):</b>",
+            parse_mode="HTML",
         )
 
         for contact in matching:

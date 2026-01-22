@@ -140,8 +140,8 @@ async def handle_custom_interval_input(update: Update, context) -> None:
     except ValueError:
         await update.message.reply_text(
             "Введи число от 1 до 365.\n"
-            "Например: `45`",
-            parse_mode="Markdown",
+            "Например: <code>45</code>",
+            parse_mode="HTML",
         )
         context.user_data["awaiting_custom_interval"] = contact_id
         return
@@ -164,7 +164,7 @@ async def handle_custom_interval_input(update: Update, context) -> None:
             freq_text = format_frequency("custom", days)
             await update.message.reply_text(
                 format_reminder_set(contact.username, freq_text, next_date.strftime("%d.%m.%Y")),
-                parse_mode="Markdown",
+                parse_mode="HTML",
             )
             await send_contact_card(update.message, await repo.get_by_id(UUID(contact_id)))
 
@@ -191,12 +191,12 @@ async def handle_custom_date_input(update: Update, context) -> None:
         await update.message.reply_text(
             "Не удалось распознать дату.\n\n"
             "Попробуй написать иначе:\n"
-            "• `завтра`\n"
-            "• `через неделю`\n"
-            "• `15 февраля`\n"
-            "• `в пятницу`\n"
-            "• `25.02.2025`",
-            parse_mode="Markdown",
+            "• <code>завтра</code>\n"
+            "• <code>через неделю</code>\n"
+            "• <code>15 февраля</code>\n"
+            "• <code>в пятницу</code>\n"
+            "• <code>25.02.2025</code>",
+            parse_mode="HTML",
         )
         context.user_data["awaiting_custom_date"] = contact_id
         return
@@ -205,7 +205,7 @@ async def handle_custom_date_input(update: Update, context) -> None:
         await update.message.reply_text(
             "Дата должна быть в будущем.\n"
             "Введи другую дату:",
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
         context.user_data["awaiting_custom_date"] = contact_id
         return
@@ -225,7 +225,7 @@ async def handle_custom_date_input(update: Update, context) -> None:
 
             await update.message.reply_text(
                 format_reminder_set(contact.username, "однократно", reminder_date.strftime("%d.%m.%Y")),
-                parse_mode="Markdown",
+                parse_mode="HTML",
             )
             await send_contact_card(update.message, await repo.get_by_id(UUID(contact_id)))
 

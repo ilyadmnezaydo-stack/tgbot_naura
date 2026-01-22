@@ -6,7 +6,7 @@ from datetime import date
 
 from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
-from telegram.helpers import escape_markdown
+from html import escape as html_escape
 
 from src.bot.handlers.callbacks import get_main_menu_keyboard, send_contact_card
 from src.bot.parsers.frequency import calculate_next_reminder, format_frequency
@@ -39,11 +39,11 @@ async def handle_add_from_prompt(
         await update.message.reply_text(
             "Не удалось распознать формат.\n\n"
             "Отправь в формате:\n"
-            "`@username описание контакта`\n\n"
+            "<code>@username описание контакта</code>\n\n"
             "Например:\n"
-            "`@ivan коллега из маркетинга. раз в неделю`\n"
-            "`@anna друг. напомни завтра`",
-            parse_mode="Markdown",
+            "<code>@ivan коллега из маркетинга. раз в неделю</code>\n"
+            "<code>@anna друг. напомни завтра</code>",
+            parse_mode="HTML",
         )
         return True
 
@@ -69,11 +69,10 @@ async def handle_add_from_prompt(
         # Check if contact already exists
         existing = await contact_repo.get_by_username(user_id, username)
         if existing:
-            safe_username = escape_markdown(username, version=1)
             await update.message.reply_text(
-                f"Контакт @{safe_username} уже существует.\n"
-                f"Используй `/edit @{safe_username}` для редактирования.",
-                parse_mode="Markdown",
+                f"Контакт @{username} уже существует.\n"
+                f"Используй /edit @{username} для редактирования.",
+                parse_mode="HTML",
             )
             return True
 
@@ -127,19 +126,18 @@ async def handle_add_from_prompt(
         freq_display = format_frequency(frequency, custom_days)
         tags_text = " ".join(tags) if tags else "—"
 
-        # Escape markdown in user-provided text
-        safe_desc = escape_markdown(description, version=1)
-        safe_tags = escape_markdown(tags_text, version=1)
-        safe_username = escape_markdown(username, version=1)
+        # Escape markdown in user-provided text (but not username)
+        safe_desc = html_escape(description)
+        safe_tags = html_escape(tags_text)
 
         await update.message.reply_text(
             f"✅ Контакт добавлен!\n\n"
-            f"*@{safe_username}*\n"
+            f"<b>@{username}</b>\n"
             f"{safe_desc}\n\n"
             f"Теги: {safe_tags}\n"
             f"Напоминание: {freq_display}\n"
             f"Следующее: {next_reminder.strftime('%d.%m.%Y')}",
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
 
     return True
@@ -158,13 +156,13 @@ async def handle_list_contacts(
         if not contacts:
             await update.message.reply_text(
                 "У тебя пока нет контактов.\n"
-                "Нажми *➕ Добавить контакт* чтобы добавить первый.",
-                parse_mode="Markdown",
+                "Нажми <b>➕ Добавить контакт</b> чтобы добавить первый.",
+                parse_mode="HTML",
                 reply_markup=get_main_menu_keyboard(),
             )
             return
 
-        await update.message.reply_text(f"📋 *Твои контакты ({len(contacts)}):*", parse_mode="Markdown")
+        await update.message.reply_text(f"📋 <b>Твои контакты ({len(contacts)}):</b>", parse_mode="HTML")
 
         # Send each contact as a separate message with buttons
         for contact in contacts:
@@ -176,15 +174,15 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     context.user_data["awaiting_add"] = True
 
     await update.message.reply_text(
-        "➕ *Добавление контакта*\n\n"
+        "➕ <b>Добавление контакта</b>\n\n"
         "Отправь данные в формате:\n"
-        "`@username описание контакта. частота`\n\n"
+        "<code>@username описание контакта. частота</code>\n\n"
         "Примеры:\n"
-        "• `@ivan коллега из маркетинга. раз в неделю`\n"
-        "• `@anna друг детства. раз в месяц`\n"
-        "• `@peter партнер по бизнесу`\n\n"
+        "• <code>@ivan коллега из маркетинга. раз в неделю</code>\n"
+        "• <code>@anna друг детства. раз в месяц</code>\n"
+        "• <code>@peter партнер по бизнесу</code>\n\n"
         "💡 Если не указать частоту — напомню раз в 2 недели.",
-        parse_mode="Markdown",
+        parse_mode="HTML",
     )
 
 
@@ -264,21 +262,20 @@ async def handle_edit_from_prompt(
             # Refresh contact to get updated values
             updated_contact = await contact_repo.get_by_id(contact.id)
 
-            # Format full contact card
-            safe_username = escape_markdown(updated_contact.username, version=1)
-            safe_desc = escape_markdown(updated_contact.description, version=1) if updated_contact.description else "не указано"
-            safe_tags = escape_markdown(" ".join(updated_contact.tags), version=1) if updated_contact.tags else "—"
+            # Format full contact card (escape user text but not username)
+            safe_desc = html_escape(updated_contact.description) if updated_contact.description else "не указано"
+            safe_tags = html_escape(" ".join(updated_contact.tags)) if updated_contact.tags else "—"
             freq_text = format_frequency(updated_contact.reminder_frequency, updated_contact.custom_interval_days)
             next_date = updated_contact.next_reminder_date.strftime("%d.%m.%Y") if updated_contact.next_reminder_date else "—"
 
             await update.message.reply_text(
-                f"✅ *Контакт обновлён!*\n\n"
-                f"*@{safe_username}*\n"
+                f"✅ <b>Контакт обновлён!</b>\n\n"
+                f"<b>@{updated_contact.username}</b>\n"
                 f"📝 {safe_desc}\n"
                 f"🏷 {safe_tags}\n\n"
                 f"🔔 Напоминание: {freq_text}\n"
                 f"📅 Следующее: {next_date}",
-                parse_mode="Markdown",
+                parse_mode="HTML",
             )
         else:
             await update.message.reply_text("Не удалось определить, что обновить.")
@@ -303,30 +300,29 @@ async def edit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
             context.user_data["editing_contact"] = str(contact.id)
 
-            # Escape markdown in user-provided text
-            safe_desc = escape_markdown(contact.description, version=1) if contact.description else "не указано"
-            safe_tags = escape_markdown(' '.join(contact.tags), version=1) if contact.tags else "—"
-            safe_username = escape_markdown(username, version=1)
+            # Escape HTML in user-provided text
+            safe_desc = html_escape(contact.description) if contact.description else "не указано"
+            safe_tags = html_escape(' '.join(contact.tags)) if contact.tags else "—"
             freq_text = format_frequency(contact.reminder_frequency, contact.custom_interval_days)
 
             await update.message.reply_text(
-                f"✏️ *Редактирование @{safe_username}*\n\n"
-                f"📝 Описание: _{safe_desc}_\n"
+                f"✏️ <b>Редактирование @{username}</b>\n\n"
+                f"📝 Описание: <i>{safe_desc}</i>\n"
                 f"🏷 Теги: {safe_tags}\n"
                 f"🔔 Напоминание: {freq_text}\n\n"
                 "Отправь новые данные:\n"
                 "• Новое описание\n"
                 "• Или новую частоту (раз в неделю, раз в месяц...)\n"
                 "• Или теги (#tag1 #tag2)\n\n"
-                "Отправь `/cancel` для отмены.",
-                parse_mode="Markdown",
+                "Отправь /cancel для отмены.",
+                parse_mode="HTML",
             )
     else:
         await update.message.reply_text(
-            "✏️ *Редактирование контакта*\n\n"
-            "Используй: `/edit @username`\n\n"
-            "Или нажми кнопку ✏️ у контакта в `/list`",
-            parse_mode="Markdown",
+            "✏️ <b>Редактирование контакта</b>\n\n"
+            "Используй: /edit @username\n\n"
+            "Или нажми кнопку ✏️ у контакта в /list",
+            parse_mode="HTML",
         )
 
 
@@ -343,12 +339,12 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data["awaiting_search"] = True
 
         await update.message.reply_text(
-            "🔍 *Поиск контактов*\n\n"
+            "🔍 <b>Поиск контактов</b>\n\n"
             "Введи поисковый запрос:\n"
-            "• `кто работает в IT?`\n"
-            "• `контакты из Москвы`\n"
-            "• `друзья`",
-            parse_mode="Markdown",
+            "• <code>кто работает в IT?</code>\n"
+            "• <code>контакты из Москвы</code>\n"
+            "• <code>друзья</code>",
+            parse_mode="HTML",
         )
 
 

@@ -56,7 +56,7 @@ async def handle_forwarded_message(
             "Не удалось определить username отправителя.\n"
             "Возможно, у пользователя скрыт профиль или это анонимное сообщение.\n\n"
             "Добавь контакт вручную через /add",
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
         return
 
@@ -74,7 +74,7 @@ async def handle_forwarded_message(
             # Show existing contact with update options
             await update.message.reply_text(
                 format_existing_contact_found(username),
-                parse_mode="Markdown",
+                parse_mode="HTML",
                 reply_markup=get_existing_contact_keyboard(str(existing.id)),
             )
             return
@@ -87,7 +87,7 @@ async def handle_forwarded_message(
 
     await update.message.reply_text(
         format_description_prompt(username, display_name),
-        parse_mode="Markdown",
+        parse_mode="HTML",
     )
 
 
@@ -144,7 +144,7 @@ async def handle_pending_contact_description(
     # Show preview with confirmation buttons
     await update.message.reply_text(
         format_contact_preview(username, description, tags, display_name),
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=get_confirm_contact_keyboard(),
     )
 
