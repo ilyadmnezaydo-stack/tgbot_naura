@@ -69,9 +69,10 @@ async def handle_add_from_prompt(
         # Check if contact already exists
         existing = await contact_repo.get_by_username(user_id, username)
         if existing:
+            safe_username = escape_markdown(username, version=1)
             await update.message.reply_text(
-                f"Контакт @{username} уже существует.\n"
-                f"Используй `/edit @{username}` для редактирования.",
+                f"Контакт @{safe_username} уже существует.\n"
+                f"Используй `/edit @{safe_username}` для редактирования.",
                 parse_mode="Markdown",
             )
             return True
@@ -129,10 +130,11 @@ async def handle_add_from_prompt(
         # Escape markdown in user-provided text
         safe_desc = escape_markdown(description, version=1)
         safe_tags = escape_markdown(tags_text, version=1)
+        safe_username = escape_markdown(username, version=1)
 
         await update.message.reply_text(
             f"✅ Контакт добавлен!\n\n"
-            f"*@{username}*\n"
+            f"*@{safe_username}*\n"
             f"{safe_desc}\n\n"
             f"Теги: {safe_tags}\n"
             f"Напоминание: {freq_display}\n"
@@ -294,9 +296,10 @@ async def edit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             # Escape markdown in user-provided text
             safe_desc = escape_markdown(contact.description, version=1) if contact.description else "не указано"
             safe_tags = escape_markdown(' '.join(contact.tags), version=1) if contact.tags else "—"
+            safe_username = escape_markdown(username, version=1)
 
             await update.message.reply_text(
-                f"✏️ *Редактирование @{username}*\n\n"
+                f"✏️ *Редактирование @{safe_username}*\n\n"
                 f"Текущее описание: _{safe_desc}_\n"
                 f"Теги: {safe_tags}\n\n"
                 "Отправь новые данные:\n"

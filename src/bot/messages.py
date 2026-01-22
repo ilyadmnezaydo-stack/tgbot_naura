@@ -12,13 +12,14 @@ def format_contact_preview(
     safe_desc = escape_markdown(description, version=1) if description else ""
     tags_text = " ".join(tags) if tags else ""
     safe_tags = escape_markdown(tags_text, version=1) if tags_text else ""
+    safe_username = escape_markdown(username, version=1) if username else "контакт"
 
     text = f"📇 *Новый контакт:*\n\n"
     if display_name:
         safe_name = escape_markdown(display_name, version=1)
-        text += f"*{safe_name}* (@{username})\n"
+        text += f"*{safe_name}* (@{safe_username})\n"
     else:
-        text += f"*@{username}*\n"
+        text += f"*@{safe_username}*\n"
     if safe_desc:
         text += f"{safe_desc}\n"
     if safe_tags:
@@ -29,14 +30,16 @@ def format_contact_preview(
 
 def format_contact_saved(username: str) -> str:
     """Format message after contact is saved."""
-    return f"✅ Контакт *@{username}* сохранен!\n\nВыбери тип напоминания:"
+    safe_username = escape_markdown(username, version=1) if username else "контакт"
+    return f"✅ Контакт *@{safe_username}* сохранен!\n\nВыбери тип напоминания:"
 
 
 def format_reminder_set(username: str, frequency_text: str, next_date_str: str) -> str:
     """Format message after reminder is set."""
+    safe_username = escape_markdown(username, version=1) if username else "контакт"
     return (
         f"🔔 Готово!\n\n"
-        f"*@{username}*\n"
+        f"*@{safe_username}*\n"
         f"Напоминание: {frequency_text}\n"
         f"Следующее: {next_date_str}"
     )
@@ -44,7 +47,8 @@ def format_reminder_set(username: str, frequency_text: str, next_date_str: str) 
 
 def format_no_reminder_set(username: str) -> str:
     """Format message when no reminder is set."""
-    return f"✅ Контакт *@{username}* сохранен без напоминания."
+    safe_username = escape_markdown(username, version=1) if username else "контакт"
+    return f"✅ Контакт *@{safe_username}* сохранен без напоминания."
 
 
 def format_contact_card(
@@ -78,13 +82,14 @@ def format_contact_card(
     # Escape markdown in user-provided text
     safe_desc = escape_markdown(desc_text, version=1) if desc_text else ""
     safe_tags = escape_markdown(tags_text, version=1) if tags_text else ""
+    safe_username = escape_markdown(username, version=1) if username else "контакт"
 
     # Build card: name/username, description, tags, status
     if display_name:
         safe_name = escape_markdown(display_name, version=1)
-        text = f"{prefix}*{safe_name}* (@{username})\n"
+        text = f"{prefix}*{safe_name}* (@{safe_username})\n"
     else:
-        text = f"{prefix}*@{username}*\n"
+        text = f"{prefix}*@{safe_username}*\n"
     if safe_desc:
         text += f"{safe_desc}\n"
     if safe_tags:
@@ -96,7 +101,8 @@ def format_contact_card(
 
 def format_existing_contact_found(username: str) -> str:
     """Format message when user re-forwards an existing contact."""
-    return f"📇 *@{username}* уже в твоих контактах.\n\nЧто хочешь сделать?"
+    safe_username = escape_markdown(username, version=1) if username else "контакт"
+    return f"📇 *@{safe_username}* уже в твоих контактах.\n\nЧто хочешь сделать?"
 
 
 def format_custom_interval_prompt() -> str:
@@ -122,8 +128,9 @@ def format_custom_date_prompt() -> str:
 def format_description_prompt(username: str, display_name: str) -> str:
     """Format prompt for contact description."""
     safe_display_name = escape_markdown(display_name, version=1)
+    safe_username = escape_markdown(username, version=1) if username else "контакт"
     return (
-        f"📇 *{safe_display_name}* (@{username})\n\n"
+        f"📇 *{safe_display_name}* (@{safe_username})\n\n"
         f"Напиши описание:\n"
         f"`коллега из IT`\n\n"
         f"Или /cancel для отмены."
@@ -132,7 +139,8 @@ def format_description_prompt(username: str, display_name: str) -> str:
 
 def format_edit_description_prompt(username: str) -> str:
     """Format prompt for editing contact description."""
+    safe_username = escape_markdown(username, version=1) if username else "контакт"
     return (
-        f"✏️ Редактирование *@{username}*\n\n"
+        f"✏️ Редактирование *@{safe_username}*\n\n"
         f"Отправь новое описание контакта:"
     )

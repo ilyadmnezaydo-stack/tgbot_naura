@@ -7,6 +7,7 @@ from uuid import UUID
 import pytz
 from telegram import Update
 from telegram.ext import ContextTypes, CallbackQueryHandler
+from telegram.helpers import escape_markdown
 
 from src.bot.keyboards import (
     get_main_menu_keyboard,
@@ -125,8 +126,9 @@ async def handle_confirm_contact(update: Update, context: ContextTypes.DEFAULT_T
         # Check if contact already exists
         existing = await contact_repo.get_by_username(user_id, username)
         if existing:
+            safe_username = escape_markdown(username, version=1) if username else "контакт"
             await query.message.edit_text(
-                f"Контакт @{username} уже существует.",
+                f"Контакт @{safe_username} уже существует.",
                 parse_mode="Markdown",
             )
             del context.user_data["draft_contact"]
@@ -359,8 +361,9 @@ async def handle_add_username_yes(update: Update, context: ContextTypes.DEFAULT_
         "display_name": username,  # No display_name available from @mention
     }
 
+    safe_username = escape_markdown(username, version=1) if username else "контакт"
     await query.message.edit_text(
-        f"Введи описание для @{username}:",
+        f"Введи описание для @{safe_username}:",
         parse_mode="Markdown",
     )
 
@@ -539,8 +542,10 @@ async def handle_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
         context.user_data["editing_contact"] = contact_id
 
+        # Escape username for Markdown (underscores break parsing)
+        escaped_username = contact.username.replace("_", "\\_") if contact.username else "контакт"
         await query.message.reply_text(
-            f"Редактирование @{contact.username}\n\n"
+            f"Редактирование @{escaped_username}\n\n"
             f"Отправь новые данные:\n"
             f"• Новое описание\n"
             f"• Или новую частоту (раз в неделю, раз в месяц...)\n"
