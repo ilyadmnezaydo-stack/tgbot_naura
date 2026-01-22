@@ -77,7 +77,7 @@ def get_contact_keyboard(contact_id: str, status: str) -> InlineKeyboardMarkup:
     if status == "paused":
         keyboard = [
             [
-                InlineKeyboardButton("▶️ Продолжить", callback_data=f"resume:{contact_id}"),
+                InlineKeyboardButton("🔔 Поставить напоминание", callback_data=f"resume:{contact_id}"),
                 InlineKeyboardButton("✏️ Изменить", callback_data=f"edit:{contact_id}"),
             ],
             [
