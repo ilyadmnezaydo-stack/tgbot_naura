@@ -111,6 +111,19 @@ def get_delete_confirm_keyboard(contact_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
+# ============ ADD USERNAME CONFIRMATION ============
+
+def get_confirm_add_username_keyboard(username: str) -> InlineKeyboardMarkup:
+    """Create confirmation keyboard for adding a contact from @username mention."""
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Да", callback_data=f"add_username_yes:{username}"),
+            InlineKeyboardButton("❌ Нет", callback_data="add_username_no"),
+        ],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
 # ============ EXISTING CONTACT OPTIONS ============
 
 def get_existing_contact_keyboard(contact_id: str) -> InlineKeyboardMarkup:

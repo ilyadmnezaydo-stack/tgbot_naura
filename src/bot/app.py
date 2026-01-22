@@ -2,6 +2,7 @@
 Telegram Application setup and message routing.
 """
 import logging
+import re
 from datetime import date, timedelta
 from uuid import UUID
 
@@ -20,6 +21,7 @@ from src.bot.handlers.forwarded import (
 )
 from src.bot.handlers.search import perform_search
 from src.bot.handlers.start import get_start_handlers
+from src.bot.keyboards import get_confirm_add_username_keyboard
 from src.bot.messages import format_reminder_set
 from src.bot.parsers.frequency import format_frequency, parse_date
 from src.config import settings
@@ -27,7 +29,46 @@ from src.db.engine import get_session
 from src.db.repositories.contacts import ContactRepository
 from src.scheduler.setup import setup_scheduler
 
+# Regex for extracting Telegram username from text
+USERNAME_REGEX = re.compile(r"@([a-zA-Z][a-zA-Z0-9_]{4,31})")
+
 logger = logging.getLogger(__name__)
+
+
+def extract_username(text: str) -> str | None:
+    """Extract first Telegram username from text (without @)."""
+    match = USERNAME_REGEX.search(text)
+    return match.group(1) if match else None
+
+
+async def check_and_offer_username_contact(update: Update, context, text: str) -> bool:
+    """
+    Check if message contains @username and offer to add as contact.
+    Returns True if username was found and offer was made, False otherwise.
+    """
+    username = extract_username(text)
+    if not username:
+        return False
+
+    user_id = update.effective_user.id
+
+    # Check if contact already exists
+    async with get_session() as session:
+        repo = ContactRepository(session)
+        existing = await repo.get_by_username(user_id, username)
+
+        if existing:
+            await update.message.reply_text(
+                f"Контакт @{username} уже существует в твоём списке."
+            )
+            return True
+
+    # Offer to add the contact
+    await update.message.reply_text(
+        f"Хочешь добавить @{username} как контакт?",
+        reply_markup=get_confirm_add_username_keyboard(username),
+    )
+    return True
 
 
 async def route_message(update: Update, context) -> None:
@@ -69,7 +110,11 @@ async def route_message(update: Update, context) -> None:
         await handle_edit_from_prompt(update, context)
         return
 
-    # 7. Unknown message - show help
+    # 7. Check for @username in message and offer to add as contact
+    if await check_and_offer_username_contact(update, context, text):
+        return
+
+    # 8. Unknown message - show help
     await update.message.reply_text(
         "Используй команды:\n"
         "/add — добавить контакт\n"

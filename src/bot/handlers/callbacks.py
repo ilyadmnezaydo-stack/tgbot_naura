@@ -330,6 +330,49 @@ async def handle_onetime_date(update: Update, context: ContextTypes.DEFAULT_TYPE
             await send_contact_card(query.message, await repo.get_by_id(UUID(contact_id)))
 
 
+# ============ ADD USERNAME FROM MESSAGE HANDLERS ============
+
+async def handle_add_username_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle 'Yes' button when user confirms adding @username as contact."""
+    query = update.callback_query
+    await query.answer()
+
+    # Extract username from callback data
+    username = query.data.split(":")[1]
+
+    user_id = update.effective_user.id
+
+    async with get_session() as session:
+        # Check if contact already exists (race condition protection)
+        repo = ContactRepository(session)
+        existing = await repo.get_by_username(user_id, username)
+
+        if existing:
+            await query.message.edit_text(
+                f"Контакт @{username} уже существует в твоём списке."
+            )
+            return
+
+    # Store username in pending_contact and ask for description
+    context.user_data["pending_contact"] = {
+        "username": username,
+        "display_name": username,  # No display_name available from @mention
+    }
+
+    await query.message.edit_text(
+        f"Введи описание для @{username}:",
+        parse_mode="Markdown",
+    )
+
+
+async def handle_add_username_no(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle 'No' button when user declines adding @username as contact."""
+    query = update.callback_query
+    await query.answer()
+
+    await query.message.delete()
+
+
 # ============ EXISTING CONTACT HANDLERS ============
 
 async def handle_update_description(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -640,6 +683,12 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # One-time date selection
     elif data.startswith("onetime:"):
         await handle_onetime_date(update, context)
+
+    # Add username from message
+    elif data.startswith("add_username_yes:"):
+        await handle_add_username_yes(update, context)
+    elif data == "add_username_no":
+        await handle_add_username_no(update, context)
 
     # Existing contact options
     elif data.startswith("update_desc:"):
