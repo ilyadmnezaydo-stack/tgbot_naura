@@ -6,8 +6,9 @@ class Settings(BaseSettings):
     # Telegram
     TELEGRAM_BOT_TOKEN: str
 
-    # Database
-    DATABASE_URL: str
+    # Supabase
+    SUPABASE_URL: str
+    SUPABASE_KEY: str
 
     # OpenAI
     OPENAI_API_KEY: str

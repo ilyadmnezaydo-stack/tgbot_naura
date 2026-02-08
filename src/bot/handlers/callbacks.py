@@ -29,7 +29,7 @@ from src.bot.messages import (
 )
 from src.bot.parsers.frequency import calculate_next_reminder, format_frequency
 from src.config import settings
-from src.db.engine import get_session
+from src.db.engine import get_supabase
 from src.db.repositories.contacts import ContactRepository
 from src.db.repositories.users import UserRepository
 
@@ -58,23 +58,23 @@ async def handle_menu_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     user_id = update.effective_user.id
 
-    async with get_session() as session:
-        contact_repo = ContactRepository(session)
-        contacts = await contact_repo.get_all_for_user(user_id)
+    client = await get_supabase()
+    contact_repo = ContactRepository(client)
+    contacts = await contact_repo.get_all_for_user(user_id)
 
-        if not contacts:
-            await query.message.reply_text(
-                "У тебя пока нет контактов.\n"
-                "Нажми <b>➕ Добавить контакт</b> чтобы добавить первый.",
-                parse_mode="HTML",
-                reply_markup=get_main_menu_keyboard(),
-            )
-            return
+    if not contacts:
+        await query.message.reply_text(
+            "У тебя пока нет контактов.\n"
+            "Нажми <b>➕ Добавить контакт</b> чтобы добавить первый.",
+            parse_mode="HTML",
+            reply_markup=get_main_menu_keyboard(),
+        )
+        return
 
-        await query.message.reply_text(f"📋 <b>Твои контакты ({len(contacts)}):</b>", parse_mode="HTML")
+    await query.message.reply_text(f"📋 <b>Твои контакты ({len(contacts)}):</b>", parse_mode="HTML")
 
-        for contact in contacts:
-            await send_contact_card(query.message, contact)
+    for contact in contacts:
+        await send_contact_card(query.message, contact)
 
 
 async def handle_menu_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -112,41 +112,41 @@ async def handle_confirm_contact(update: Update, context: ContextTypes.DEFAULT_T
     description = draft["description"]
     tags = draft["tags"]
 
-    async with get_session() as session:
-        # Ensure user exists
-        user_repo = UserRepository(session)
-        await user_repo.get_or_create(
-            user_id=user_id,
-            username=update.effective_user.username,
-            first_name=update.effective_user.first_name,
+    client = await get_supabase()
+    # Ensure user exists
+    user_repo = UserRepository(client)
+    await user_repo.get_or_create(
+        user_id=user_id,
+        username=update.effective_user.username,
+        first_name=update.effective_user.first_name,
+    )
+
+    contact_repo = ContactRepository(client)
+
+    # Check if contact already exists
+    existing = await contact_repo.get_by_username(user_id, username)
+    if existing:
+        await query.message.edit_text(
+            f"Контакт @{username} уже существует.",
+            parse_mode="HTML",
         )
+        del context.user_data["draft_contact"]
+        return
 
-        contact_repo = ContactRepository(session)
+    # Create contact without reminder (will be set later)
+    contact = await contact_repo.create(
+        user_id=user_id,
+        username=username,
+        display_name=display_name,
+        description=description,
+        tags=tags,
+        reminder_frequency="monthly",  # Default, will be updated
+        next_reminder_date=date.today() + timedelta(days=30),
+        status="active",
+    )
 
-        # Check if contact already exists
-        existing = await contact_repo.get_by_username(user_id, username)
-        if existing:
-            await query.message.edit_text(
-                f"Контакт @{username} уже существует.",
-                parse_mode="HTML",
-            )
-            del context.user_data["draft_contact"]
-            return
-
-        # Create contact without reminder (will be set later)
-        contact = await contact_repo.create(
-            user_id=user_id,
-            username=username,
-            display_name=display_name,
-            description=description,
-            tags=tags,
-            reminder_frequency="monthly",  # Default, will be updated
-            next_reminder_date=date.today() + timedelta(days=30),
-            status="active",
-        )
-
-        # Store contact_id for reminder selection
-        context.user_data["setting_reminder_for"] = str(contact.id)
+    # Store contact_id for reminder selection
+    context.user_data["setting_reminder_for"] = str(contact.id)
 
     # Clear draft
     del context.user_data["draft_contact"]
@@ -216,18 +216,18 @@ async def handle_reminder_type(update: Update, context: ContextTypes.DEFAULT_TYP
 
     elif reminder_type == "none":
         # No reminder - pause the contact
-        async with get_session() as session:
-            repo = ContactRepository(session)
-            contact = await repo.get_by_id(UUID(contact_id))
+        client = await get_supabase()
+        repo = ContactRepository(client)
+        contact = await repo.get_by_id(UUID(contact_id))
 
-            if contact:
-                await repo.update(contact, status="paused", next_reminder_date=None)
+        if contact:
+            await repo.update(contact.id, status="paused", next_reminder_date=None)
 
-                await query.message.edit_text(
-                    format_no_reminder_set(contact.username),
-                    parse_mode="HTML",
-                )
-                await send_contact_card(query.message, await repo.get_by_id(UUID(contact_id)))
+            await query.message.edit_text(
+                format_no_reminder_set(contact.username),
+                parse_mode="HTML",
+            )
+            await send_contact_card(query.message, await repo.get_by_id(UUID(contact_id)))
 
 
 # ============ REGULAR INTERVAL HANDLERS ============
@@ -260,25 +260,25 @@ async def handle_interval_selection(update: Update, context: ContextTypes.DEFAUL
     frequency, custom_days, days = interval_map.get(interval, ("monthly", None, 30))
     next_date = date.today() + timedelta(days=days)
 
-    async with get_session() as session:
-        repo = ContactRepository(session)
-        contact = await repo.get_by_id(UUID(contact_id))
+    client = await get_supabase()
+    repo = ContactRepository(client)
+    contact = await repo.get_by_id(UUID(contact_id))
 
-        if contact:
-            await repo.update(
-                contact,
-                reminder_frequency=frequency,
-                custom_interval_days=custom_days,
-                next_reminder_date=next_date,
-                status="active",
-            )
+    if contact:
+        await repo.update(
+            contact.id,
+            reminder_frequency=frequency,
+            custom_interval_days=custom_days,
+            next_reminder_date=next_date,
+            status="active",
+        )
 
-            freq_text = format_frequency(frequency, custom_days)
-            await query.message.edit_text(
-                format_reminder_set(contact.username, freq_text, next_date.strftime("%d.%m.%Y")),
-                parse_mode="HTML",
-            )
-            await send_contact_card(query.message, await repo.get_by_id(UUID(contact_id)))
+        freq_text = format_frequency(frequency, custom_days)
+        await query.message.edit_text(
+            format_reminder_set(contact.username, freq_text, next_date.strftime("%d.%m.%Y")),
+            parse_mode="HTML",
+        )
+        await send_contact_card(query.message, await repo.get_by_id(UUID(contact_id)))
 
 
 # ============ ONE-TIME DATE HANDLERS ============
@@ -311,24 +311,24 @@ async def handle_onetime_date(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     reminder_date = date_map.get(date_option, today + timedelta(days=1))
 
-    async with get_session() as session:
-        repo = ContactRepository(session)
-        contact = await repo.get_by_id(UUID(contact_id))
+    client = await get_supabase()
+    repo = ContactRepository(client)
+    contact = await repo.get_by_id(UUID(contact_id))
 
-        if contact:
-            await repo.update(
-                contact,
-                reminder_frequency="one_time",
-                next_reminder_date=reminder_date,
-                one_time_date=reminder_date,
-                status="one_time",
-            )
+    if contact:
+        await repo.update(
+            contact.id,
+            reminder_frequency="one_time",
+            next_reminder_date=reminder_date,
+            one_time_date=reminder_date,
+            status="one_time",
+        )
 
-            await query.message.edit_text(
-                format_reminder_set(contact.username, "однократно", reminder_date.strftime("%d.%m.%Y")),
-                parse_mode="HTML",
-            )
-            await send_contact_card(query.message, await repo.get_by_id(UUID(contact_id)))
+        await query.message.edit_text(
+            format_reminder_set(contact.username, "однократно", reminder_date.strftime("%d.%m.%Y")),
+            parse_mode="HTML",
+        )
+        await send_contact_card(query.message, await repo.get_by_id(UUID(contact_id)))
 
 
 # ============ ADD USERNAME FROM MESSAGE HANDLERS ============
@@ -343,16 +343,16 @@ async def handle_add_username_yes(update: Update, context: ContextTypes.DEFAULT_
 
     user_id = update.effective_user.id
 
-    async with get_session() as session:
-        # Check if contact already exists (race condition protection)
-        repo = ContactRepository(session)
-        existing = await repo.get_by_username(user_id, username)
+    client = await get_supabase()
+    # Check if contact already exists (race condition protection)
+    repo = ContactRepository(client)
+    existing = await repo.get_by_username(user_id, username)
 
-        if existing:
-            await query.message.edit_text(
-                f"Контакт @{username} уже существует в твоём списке."
-            )
-            return
+    if existing:
+        await query.message.edit_text(
+            f"Контакт @{username} уже существует в твоём списке."
+        )
+        return
 
     # Store username in pending_contact and ask for description
     context.user_data["pending_contact"] = {
@@ -383,18 +383,18 @@ async def handle_update_description(update: Update, context: ContextTypes.DEFAUL
 
     contact_id = query.data.split(":")[1]
 
-    async with get_session() as session:
-        repo = ContactRepository(session)
-        contact = await repo.get_by_id(UUID(contact_id))
+    client = await get_supabase()
+    repo = ContactRepository(client)
+    contact = await repo.get_by_id(UUID(contact_id))
 
-        if contact:
-            context.user_data["editing_contact"] = contact_id
-            context.user_data["editing_field"] = "description"
+    if contact:
+        context.user_data["editing_contact"] = contact_id
+        context.user_data["editing_field"] = "description"
 
-            await query.message.edit_text(
-                format_edit_description_prompt(contact.username),
-                parse_mode="HTML",
-            )
+        await query.message.edit_text(
+            format_edit_description_prompt(contact.username),
+            parse_mode="HTML",
+        )
 
 
 async def handle_update_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -422,41 +422,37 @@ async def handle_contacted_callback(update: Update, context: ContextTypes.DEFAUL
     tz = pytz.timezone(settings.TIMEZONE)
     now = datetime.now(tz)
 
-    async with get_session() as session:
-        repo = ContactRepository(session)
-        contact = await repo.get_by_id(UUID(contact_id))
+    client = await get_supabase()
+    repo = ContactRepository(client)
+    contact = await repo.get_by_id(UUID(contact_id))
 
-        if not contact or contact.user_id != user_id:
-            await query.message.edit_text("Контакт не найден.")
-            return
+    if not contact or contact.user_id != user_id:
+        await query.message.edit_text("Контакт не найден.")
+        return
 
-        updates = {"last_contacted_at": now}
+    updates = {"last_contacted_at": now}
 
-        if contact.status == "one_time":
-            updates["status"] = "paused"
-            await repo.update(contact, **updates)
-            await repo.add_history(contact.id, "contacted", "One-time reminder completed")
+    if contact.status == "one_time":
+        updates["status"] = "paused"
+        await repo.update(contact.id, **updates)
+        await query.message.edit_text(
+            f"✅ Отлично! Отметил, что ты связался с @{contact.username}.\n"
+            f"Это было одноразовое напоминание — контакт поставлен на паузу."
+        )
+    else:
+        next_date = calculate_next_reminder(
+            contact.reminder_frequency, contact.custom_interval_days
+        )
+        updates["next_reminder_date"] = next_date
 
-            await query.message.edit_text(
-                f"✅ Отлично! Отметил, что ты связался с @{contact.username}.\n"
-                f"Это было одноразовое напоминание — контакт поставлен на паузу."
-            )
-        else:
-            next_date = calculate_next_reminder(
-                contact.reminder_frequency, contact.custom_interval_days
-            )
-            updates["next_reminder_date"] = next_date
-
-            await repo.update(contact, **updates)
-            await repo.add_history(contact.id, "contacted")
-
-            # Update the message with new date
-            await send_contact_card(
-                query.message,
-                await repo.get_by_id(UUID(contact_id)),
-                edit=True,
-                prefix=f"✅ Отметил! Следующее напоминание: {next_date.strftime('%d.%m.%Y')}\n\n"
-            )
+        await repo.update(contact.id, **updates)
+        # Update the message with new date
+        await send_contact_card(
+            query.message,
+            await repo.get_by_id(UUID(contact_id)),
+            edit=True,
+            prefix=f"✅ Отметил! Следующее напоминание: {next_date.strftime('%d.%m.%Y')}\n\n"
+        )
 
 
 async def handle_pause_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -467,28 +463,27 @@ async def handle_pause_callback(update: Update, context: ContextTypes.DEFAULT_TY
     contact_id = query.data.split(":")[1]
     user_id = update.effective_user.id
 
-    async with get_session() as session:
-        repo = ContactRepository(session)
-        contact = await repo.get_by_id(UUID(contact_id))
+    client = await get_supabase()
+    repo = ContactRepository(client)
+    contact = await repo.get_by_id(UUID(contact_id))
 
-        if not contact or contact.user_id != user_id:
-            await query.message.edit_text("Контакт не найден.")
-            return
+    if not contact or contact.user_id != user_id:
+        await query.message.edit_text("Контакт не найден.")
+        return
 
-        if contact.status == "paused":
-            await query.answer("Контакт уже на паузе", show_alert=True)
-            return
+    if contact.status == "paused":
+        await query.answer("Контакт уже на паузе", show_alert=True)
+        return
 
-        await repo.update(contact, status="paused")
-        await repo.add_history(contact.id, "paused")
+    await repo.update(contact.id, status="paused")
 
-        # Update the card with new status
-        await send_contact_card(
-            query.message,
-            await repo.get_by_id(UUID(contact_id)),
-            edit=True,
-            prefix="⏸️ Напоминания приостановлены\n\n"
-        )
+    # Update the card with new status
+    await send_contact_card(
+        query.message,
+        await repo.get_by_id(UUID(contact_id)),
+        edit=True,
+        prefix="⏸️ Напоминания приостановлены\n\n"
+    )
 
 
 async def handle_resume_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -499,27 +494,26 @@ async def handle_resume_callback(update: Update, context: ContextTypes.DEFAULT_T
     contact_id = query.data.split(":")[1]
     user_id = update.effective_user.id
 
-    async with get_session() as session:
-        repo = ContactRepository(session)
-        contact = await repo.get_by_id(UUID(contact_id))
+    client = await get_supabase()
+    repo = ContactRepository(client)
+    contact = await repo.get_by_id(UUID(contact_id))
 
-        if not contact or contact.user_id != user_id:
-            await query.message.edit_text("Контакт не найден.")
-            return
+    if not contact or contact.user_id != user_id:
+        await query.message.edit_text("Контакт не найден.")
+        return
 
-        next_date = calculate_next_reminder(
-            contact.reminder_frequency, contact.custom_interval_days
-        )
+    next_date = calculate_next_reminder(
+        contact.reminder_frequency, contact.custom_interval_days
+    )
 
-        await repo.update(contact, status="active", next_reminder_date=next_date)
-        await repo.add_history(contact.id, "resumed")
+    await repo.update(contact.id, status="active", next_reminder_date=next_date)
 
-        await send_contact_card(
-            query.message,
-            await repo.get_by_id(UUID(contact_id)),
-            edit=True,
-            prefix=f"▶️ Напоминания возобновлены! Следующее: {next_date.strftime('%d.%m.%Y')}\n\n"
-        )
+    await send_contact_card(
+        query.message,
+        await repo.get_by_id(UUID(contact_id)),
+        edit=True,
+        prefix=f"▶️ Напоминания возобновлены! Следующее: {next_date.strftime('%d.%m.%Y')}\n\n"
+    )
 
 
 async def handle_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -530,33 +524,33 @@ async def handle_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     contact_id = query.data.split(":")[1]
     user_id = update.effective_user.id
 
-    async with get_session() as session:
-        repo = ContactRepository(session)
-        contact = await repo.get_by_id(UUID(contact_id))
+    client = await get_supabase()
+    repo = ContactRepository(client)
+    contact = await repo.get_by_id(UUID(contact_id))
 
-        if not contact or contact.user_id != user_id:
-            await query.message.edit_text("Контакт не найден.")
-            return
+    if not contact or contact.user_id != user_id:
+        await query.message.edit_text("Контакт не найден.")
+        return
 
-        context.user_data["editing_contact"] = contact_id
+    context.user_data["editing_contact"] = contact_id
 
-        # Escape HTML in user-provided text
-        safe_desc = html_escape(contact.description) if contact.description else "не указано"
-        safe_tags = html_escape(" ".join(contact.tags)) if contact.tags else "—"
-        freq_text = format_frequency(contact.reminder_frequency, contact.custom_interval_days)
+    # Escape HTML in user-provided text
+    safe_desc = html_escape(contact.description) if contact.description else "не указано"
+    safe_tags = html_escape(" ".join(contact.tags)) if contact.tags else "—"
+    freq_text = format_frequency(contact.reminder_frequency, contact.custom_interval_days)
 
-        await query.message.reply_text(
-            f"✏️ <b>Редактирование @{contact.username}</b>\n\n"
-            f"📝 Описание: <i>{safe_desc}</i>\n"
-            f"🏷 Теги: {safe_tags}\n"
-            f"🔔 Напоминание: {freq_text}\n\n"
-            f"Отправь новые данные:\n"
-            f"• Новое описание\n"
-            f"• Или новую частоту (раз в неделю, раз в месяц...)\n"
-            f"• Или теги (#tag1 #tag2)\n\n"
-            f"Отправь /cancel для отмены.",
-            parse_mode="HTML",
-        )
+    await query.message.reply_text(
+        f"✏️ <b>Редактирование @{contact.username}</b>\n\n"
+        f"📝 Описание: <i>{safe_desc}</i>\n"
+        f"🏷 Теги: {safe_tags}\n"
+        f"🔔 Напоминание: {freq_text}\n\n"
+        f"Отправь новые данные:\n"
+        f"• Новое описание\n"
+        f"• Или новую частоту (раз в неделю, раз в месяц...)\n"
+        f"• Или теги (#tag1 #tag2)\n\n"
+        f"Отправь /cancel для отмены.",
+        parse_mode="HTML",
+    )
 
 
 async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -567,18 +561,18 @@ async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_T
     contact_id = query.data.split(":")[1]
     user_id = update.effective_user.id
 
-    async with get_session() as session:
-        repo = ContactRepository(session)
-        contact = await repo.get_by_id(UUID(contact_id))
+    client = await get_supabase()
+    repo = ContactRepository(client)
+    contact = await repo.get_by_id(UUID(contact_id))
 
-        if not contact or contact.user_id != user_id:
-            await query.message.edit_text("Контакт не найден.")
-            return
+    if not contact or contact.user_id != user_id:
+        await query.message.edit_text("Контакт не найден.")
+        return
 
-        await query.message.edit_text(
-            f"❌ Удалить контакт @{contact.username}?",
-            reply_markup=get_delete_confirm_keyboard(contact_id),
-        )
+    await query.message.edit_text(
+        f"❌ Удалить контакт @{contact.username}?",
+        reply_markup=get_delete_confirm_keyboard(contact_id),
+    )
 
 
 async def handle_delete_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -589,18 +583,18 @@ async def handle_delete_confirm(update: Update, context: ContextTypes.DEFAULT_TY
     contact_id = query.data.split(":")[1]
     user_id = update.effective_user.id
 
-    async with get_session() as session:
-        repo = ContactRepository(session)
-        contact = await repo.get_by_id(UUID(contact_id))
+    client = await get_supabase()
+    repo = ContactRepository(client)
+    contact = await repo.get_by_id(UUID(contact_id))
 
-        if not contact or contact.user_id != user_id:
-            await query.message.edit_text("Контакт не найден.")
-            return
+    if not contact or contact.user_id != user_id:
+        await query.message.edit_text("Контакт не найден.")
+        return
 
-        username = contact.username
-        await repo.delete(contact)
+    username = contact.username
+    await repo.delete(contact.id)
 
-        await query.message.edit_text(f"✅ Контакт @{username} удалён.")
+    await query.message.edit_text(f"✅ Контакт @{username} удалён.")
 
 
 async def handle_delete_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -611,14 +605,14 @@ async def handle_delete_cancel(update: Update, context: ContextTypes.DEFAULT_TYP
     contact_id = query.data.split(":")[1]
     user_id = update.effective_user.id
 
-    async with get_session() as session:
-        repo = ContactRepository(session)
-        contact = await repo.get_by_id(UUID(contact_id))
+    client = await get_supabase()
+    repo = ContactRepository(client)
+    contact = await repo.get_by_id(UUID(contact_id))
 
-        if contact and contact.user_id == user_id:
-            await send_contact_card(query.message, contact, edit=True)
-        else:
-            await query.message.edit_text("Операция отменена.")
+    if contact and contact.user_id == user_id:
+        await send_contact_card(query.message, contact, edit=True)
+    else:
+        await query.message.edit_text("Операция отменена.")
 
 
 # ============ HELPER FUNCTIONS ============

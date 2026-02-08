@@ -3,14 +3,14 @@ Scheduled reminder jobs.
 """
 import logging
 from datetime import date, datetime, timedelta
+from types import SimpleNamespace
 from typing import Dict, List
 
 from telegram.ext import ContextTypes
 
 from src.bot.handlers.callbacks import send_contact_card_to_chat
 from src.config import settings
-from src.db.engine import get_session
-from src.db.models import Contact
+from src.db.engine import get_supabase
 from src.db.repositories.contacts import ContactRepository
 
 logger = logging.getLogger(__name__)
@@ -24,40 +24,39 @@ async def morning_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     today = date.today()
     logger.info(f"Running morning reminder job for {today}")
 
-    async with get_session() as session:
-        repo = ContactRepository(session)
-        due_contacts = await repo.get_due_today(today)
+    client = await get_supabase()
+    repo = ContactRepository(client)
+    due_contacts = await repo.get_due_today(today)
 
-        if not due_contacts:
-            logger.info("No contacts due today")
-            return
+    if not due_contacts:
+        logger.info("No contacts due today")
+        return
 
-        # Group contacts by user_id
-        user_contacts: Dict[int, List[Contact]] = {}
-        for contact in due_contacts:
-            if contact.user_id not in user_contacts:
-                user_contacts[contact.user_id] = []
-            user_contacts[contact.user_id].append(contact)
+    # Group contacts by user_id
+    user_contacts: Dict[int, List[SimpleNamespace]] = {}
+    for contact in due_contacts:
+        if contact.user_id not in user_contacts:
+            user_contacts[contact.user_id] = []
+        user_contacts[contact.user_id].append(contact)
 
-        # Send reminders to each user
-        for user_id, contacts in user_contacts.items():
-            try:
-                # Send header
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text="☀️ <b>Доброе утро!</b> Сегодня стоит написать:",
-                    parse_mode="HTML",
-                )
+    # Send reminders to each user
+    for user_id, contacts in user_contacts.items():
+        try:
+            # Send header
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="☀️ <b>Доброе утро!</b> Сегодня стоит написать:",
+                parse_mode="HTML",
+            )
 
-                # Send each contact as a card with buttons
-                for c in contacts:
-                    await send_contact_card_to_chat(context.bot, user_id, c)
-                    await repo.add_history(c.id, "reminder_sent", "Morning reminder")
+            # Send each contact as a card with buttons
+            for c in contacts:
+                await send_contact_card_to_chat(context.bot, user_id, c)
 
-                logger.info(f"Sent morning reminder to user {user_id} for {len(contacts)} contacts")
+            logger.info(f"Sent morning reminder to user {user_id} for {len(contacts)} contacts")
 
-            except Exception as e:
-                logger.error(f"Failed to send morning reminder to {user_id}: {e}")
+        except Exception as e:
+            logger.error(f"Failed to send morning reminder to {user_id}: {e}")
 
 
 async def evening_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -68,39 +67,39 @@ async def evening_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     today = date.today()
     logger.info(f"Running evening reminder job for {today}")
 
-    async with get_session() as session:
-        repo = ContactRepository(session)
-        overdue = await repo.get_overdue_not_contacted(today)
+    client = await get_supabase()
+    repo = ContactRepository(client)
+    overdue = await repo.get_overdue_not_contacted(today)
 
-        if not overdue:
-            logger.info("No overdue contacts")
-            return
+    if not overdue:
+        logger.info("No overdue contacts")
+        return
 
-        # Group contacts by user_id
-        user_contacts: Dict[int, List[Contact]] = {}
-        for contact in overdue:
-            if contact.user_id not in user_contacts:
-                user_contacts[contact.user_id] = []
-            user_contacts[contact.user_id].append(contact)
+    # Group contacts by user_id
+    user_contacts: Dict[int, List[SimpleNamespace]] = {}
+    for contact in overdue:
+        if contact.user_id not in user_contacts:
+            user_contacts[contact.user_id] = []
+        user_contacts[contact.user_id].append(contact)
 
-        # Send reminders to each user
-        for user_id, contacts in user_contacts.items():
-            try:
-                # Send header
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text="🌙 <b>Вечернее напоминание!</b>\nТы ещё не отметил, что связался с:",
-                    parse_mode="HTML",
-                )
+    # Send reminders to each user
+    for user_id, contacts in user_contacts.items():
+        try:
+            # Send header
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="🌙 <b>Вечернее напоминание!</b>\nТы ещё не отметил, что связался с:",
+                parse_mode="HTML",
+            )
 
-                # Send each contact as a card with buttons
-                for c in contacts:
-                    await send_contact_card_to_chat(context.bot, user_id, c)
+            # Send each contact as a card with buttons
+            for c in contacts:
+                await send_contact_card_to_chat(context.bot, user_id, c)
 
-                logger.info(f"Sent evening reminder to user {user_id} for {len(contacts)} contacts")
+            logger.info(f"Sent evening reminder to user {user_id} for {len(contacts)} contacts")
 
-            except Exception as e:
-                logger.error(f"Failed to send evening reminder to {user_id}: {e}")
+        except Exception as e:
+            logger.error(f"Failed to send evening reminder to {user_id}: {e}")
 
 
 async def weekly_stats_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -110,49 +109,45 @@ async def weekly_stats_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     logger.info("Running weekly stats job")
 
-    async with get_session() as session:
-        repo = ContactRepository(session)
+    client = await get_supabase()
+    repo = ContactRepository(client)
 
-        # Get all unique user IDs from contacts
-        from sqlalchemy import select, distinct
-        from src.db.models import Contact
+    # Get all unique user IDs from contacts
+    user_ids = await repo.get_all_unique_user_ids()
 
-        result = await session.execute(select(distinct(Contact.user_id)))
-        user_ids = [row[0] for row in result.fetchall()]
+    for user_id in user_ids:
+        try:
+            # Get stats
+            contacts = await repo.get_all_for_user(user_id)
+            total_contacts = len(contacts)
+            active_contacts = len([c for c in contacts if c.status == "active"])
+            paused_contacts = len([c for c in contacts if c.status == "paused"])
 
-        for user_id in user_ids:
-            try:
-                # Get stats
-                contacts = await repo.get_all_for_user(user_id)
-                total_contacts = len(contacts)
-                active_contacts = len([c for c in contacts if c.status == "active"])
-                paused_contacts = len([c for c in contacts if c.status == "paused"])
+            # Contacted this week
+            contacted_count = await repo.get_contacts_contacted_this_week(user_id)
 
-                # Contacted this week
-                contacted_count = await repo.get_contacts_contacted_this_week(user_id)
+            # Build message
+            message_parts = ["📊 <b>Твоя неделя в цифрах:</b>\n"]
+            message_parts.append(f"👥 Всего контактов: {total_contacts}")
+            message_parts.append(f"✅ Активных: {active_contacts}")
+            if paused_contacts:
+                message_parts.append(f"⏸️ На паузе: {paused_contacts}")
+            message_parts.append(f"\n📨 Связался на этой неделе: {contacted_count}")
 
-                # Build message
-                message_parts = ["📊 <b>Твоя неделя в цифрах:</b>\n"]
-                message_parts.append(f"👥 Всего контактов: {total_contacts}")
-                message_parts.append(f"✅ Активных: {active_contacts}")
-                if paused_contacts:
-                    message_parts.append(f"⏸️ На паузе: {paused_contacts}")
-                message_parts.append(f"\n📨 Связался на этой неделе: {contacted_count}")
+            # Motivation
+            if contacted_count == 0:
+                message_parts.append("\n💡 На этой неделе ещё не было контактов. Самое время кому-то написать!")
+            elif contacted_count >= active_contacts and active_contacts > 0:
+                message_parts.append("\n🎉 Отлично! Ты связался со всеми активными контактами!")
+            else:
+                message_parts.append("\n👍 Хороший прогресс! Продолжай поддерживать связи.")
 
-                # Motivation
-                if contacted_count == 0:
-                    message_parts.append("\n💡 На этой неделе ещё не было контактов. Самое время кому-то написать!")
-                elif contacted_count >= active_contacts and active_contacts > 0:
-                    message_parts.append("\n🎉 Отлично! Ты связался со всеми активными контактами!")
-                else:
-                    message_parts.append("\n👍 Хороший прогресс! Продолжай поддерживать связи.")
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="\n".join(message_parts),
+                parse_mode="HTML",
+            )
+            logger.info(f"Sent weekly stats to user {user_id}")
 
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text="\n".join(message_parts),
-                    parse_mode="HTML",
-                )
-                logger.info(f"Sent weekly stats to user {user_id}")
-
-            except Exception as e:
-                logger.error(f"Failed to send weekly stats to {user_id}: {e}")
+        except Exception as e:
+            logger.error(f"Failed to send weekly stats to {user_id}: {e}")

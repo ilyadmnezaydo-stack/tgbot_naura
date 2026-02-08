@@ -1,15 +1,16 @@
+from types import SimpleNamespace
 from typing import Optional
 
-from sqlalchemy import select
-
-from src.db.models import User
+from src.db.models import to_record
 from src.db.repositories.base import BaseRepository
 
 
 class UserRepository(BaseRepository):
-    async def get_by_id(self, user_id: int) -> Optional[User]:
-        result = await self.session.execute(select(User).where(User.id == user_id))
-        return result.scalar_one_or_none()
+    TABLE = "bot_users"
+
+    async def get_by_id(self, user_id: int) -> Optional[SimpleNamespace]:
+        result = await self.client.table(self.TABLE).select("*").eq("id", user_id).maybe_single().execute()
+        return to_record(result.data) if result else None
 
     async def get_or_create(
         self,
@@ -17,30 +18,31 @@ class UserRepository(BaseRepository):
         username: Optional[str] = None,
         first_name: Optional[str] = None,
         language_code: str = "ru",
-    ) -> User:
+    ) -> SimpleNamespace:
         user = await self.get_by_id(user_id)
         if user:
             # Update user info if changed
+            updates = {}
             if username and user.username != username:
-                user.username = username
+                updates["username"] = username
             if first_name and user.first_name != first_name:
-                user.first_name = first_name
-            await self.session.commit()
+                updates["first_name"] = first_name
+            if updates:
+                result = await self.client.table(self.TABLE).update(updates).eq("id", user_id).execute()
+                return to_record(result.data[0])
             return user
 
         # Create new user
-        user = User(
-            id=user_id,
-            username=username,
-            first_name=first_name,
-            language_code=language_code,
-        )
-        self.session.add(user)
-        await self.session.commit()
-        await self.session.refresh(user)
-        return user
+        data = {
+            "id": user_id,
+            "username": username,
+            "first_name": first_name,
+            "language_code": language_code,
+        }
+        result = await self.client.table(self.TABLE).insert(data).execute()
+        return to_record(result.data[0])
 
     async def get_all_user_ids(self) -> list[int]:
         """Get all user IDs for batch operations like reminders"""
-        result = await self.session.execute(select(User.id))
-        return [row[0] for row in result.fetchall()]
+        result = await self.client.table(self.TABLE).select("id").execute()
+        return [row["id"] for row in result.data]

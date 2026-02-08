@@ -9,8 +9,10 @@ from telegram.ext import CommandHandler, ContextTypes
 from html import escape as html_escape
 
 from src.bot.handlers.callbacks import get_main_menu_keyboard, send_contact_card
+from src.bot.keyboards import get_reminder_type_keyboard
+from src.bot.messages import format_contact_saved
 from src.bot.parsers.frequency import calculate_next_reminder, format_frequency
-from src.db.engine import get_session
+from src.db.engine import get_supabase
 from src.db.repositories.contacts import ContactRepository
 from src.db.repositories.users import UserRepository
 from src.services.ai_service import AIService
@@ -41,8 +43,8 @@ async def handle_add_from_prompt(
             "Отправь в формате:\n"
             "<code>@username описание контакта</code>\n\n"
             "Например:\n"
-            "<code>@ivan коллега из маркетинга. раз в неделю</code>\n"
-            "<code>@anna друг. напомни завтра</code>",
+            "<code>@ivan коллега из маркетинга</code>\n"
+            "<code>@anna друг детства</code>",
             parse_mode="HTML",
         )
         return True
@@ -55,90 +57,56 @@ async def handle_add_from_prompt(
 
     user_id = update.effective_user.id
 
-    async with get_session() as session:
-        # Ensure user exists
-        user_repo = UserRepository(session)
-        await user_repo.get_or_create(
-            user_id=user_id,
-            username=update.effective_user.username,
-            first_name=update.effective_user.first_name,
-        )
+    client = await get_supabase()
+    # Ensure user exists
+    user_repo = UserRepository(client)
+    await user_repo.get_or_create(
+        user_id=user_id,
+        username=update.effective_user.username,
+        first_name=update.effective_user.first_name,
+    )
 
-        contact_repo = ContactRepository(session)
+    contact_repo = ContactRepository(client)
 
-        # Check if contact already exists
-        existing = await contact_repo.get_by_username(user_id, username)
-        if existing:
-            await update.message.reply_text(
-                f"Контакт @{username} уже существует.\n"
-                f"Используй /edit @{username} для редактирования.",
-                parse_mode="HTML",
-            )
-            return True
-
-        # Parse input using LLM (description, tags, frequency, date)
-        ai_service = AIService()
-        parsed = await ai_service.parse_contact_input(raw_description)
-
-        if not parsed:
-            # Fallback to simple mode
-            description = raw_description
-            tags = []
-            frequency = "biweekly"
-            custom_days = None
-            one_time_date = None
-        else:
-            description = parsed.description
-            tags = parsed.tags
-            frequency = parsed.frequency_type
-            custom_days = parsed.custom_days
-            one_time_date = None
-
-            # Parse reminder_date if provided
-            if parsed.reminder_date:
-                try:
-                    one_time_date = date.fromisoformat(parsed.reminder_date)
-                except ValueError:
-                    pass
-
-        # Calculate next reminder date
-        if frequency == "one_time" and one_time_date:
-            next_reminder = one_time_date
-            status = "one_time"
-        else:
-            next_reminder = calculate_next_reminder(frequency, custom_days)
-            status = "active"
-
-        # Create contact
-        await contact_repo.create(
-            user_id=user_id,
-            username=username,
-            description=description,
-            tags=tags,
-            reminder_frequency=frequency,
-            custom_interval_days=custom_days,
-            next_reminder_date=next_reminder,
-            one_time_date=one_time_date,
-            status=status,
-        )
-
-        # Format response
-        freq_display = format_frequency(frequency, custom_days)
-        tags_text = " ".join(tags) if tags else "—"
-
-        # Escape markdown in user-provided text (but not username)
-        safe_desc = html_escape(description)
-        safe_tags = html_escape(tags_text)
-
+    # Check if contact already exists
+    existing = await contact_repo.get_by_username(user_id, username)
+    if existing:
         await update.message.reply_text(
-            f"✅ Контакт добавлен!\n\n"
-            f"<b>@{username}</b>\n"
-            f"{safe_desc}\n\n"
-            f"Теги: {safe_tags}\n"
-            f"Напоминание: {freq_display}\n"
-            f"Следующее: {next_reminder.strftime('%d.%m.%Y')}",
+            f"Контакт @{username} уже существует.\n"
+            f"Используй /edit @{username} для редактирования.",
             parse_mode="HTML",
         )
+        return True
+
+    # Parse input using LLM (description + tags only, frequency will be asked separately)
+    ai_service = AIService()
+    parsed = await ai_service.parse_contact_input(raw_description)
+
+    if not parsed:
+        description = raw_description
+        tags = []
+    else:
+        description = parsed.description
+        tags = parsed.tags
+
+    # Create contact with default reminder (will be updated in next step)
+    from datetime import timedelta
+    contact = await contact_repo.create(
+        user_id=user_id,
+        username=username,
+        description=description,
+        tags=tags,
+        reminder_frequency="monthly",
+        next_reminder_date=date.today() + timedelta(days=30),
+        status="active",
+    )
+
+    # Show reminder type selection keyboard
+    await update.message.reply_text(
+        format_contact_saved(username),
+        parse_mode="HTML",
+        reply_markup=get_reminder_type_keyboard(str(contact.id)),
+    )
 
     return True
 
@@ -149,24 +117,24 @@ async def handle_list_contacts(
     """Handle /list command - show all contacts with inline buttons"""
     user_id = update.effective_user.id
 
-    async with get_session() as session:
-        contact_repo = ContactRepository(session)
-        contacts = await contact_repo.get_all_for_user(user_id)
+    client = await get_supabase()
+    contact_repo = ContactRepository(client)
+    contacts = await contact_repo.get_all_for_user(user_id)
 
-        if not contacts:
-            await update.message.reply_text(
-                "У тебя пока нет контактов.\n"
-                "Нажми <b>➕ Добавить контакт</b> чтобы добавить первый.",
-                parse_mode="HTML",
-                reply_markup=get_main_menu_keyboard(),
-            )
-            return
+    if not contacts:
+        await update.message.reply_text(
+            "У тебя пока нет контактов.\n"
+            "Нажми <b>➕ Добавить контакт</b> чтобы добавить первый.",
+            parse_mode="HTML",
+            reply_markup=get_main_menu_keyboard(),
+        )
+        return
 
-        await update.message.reply_text(f"📋 <b>Твои контакты ({len(contacts)}):</b>", parse_mode="HTML")
+    await update.message.reply_text(f"📋 <b>Твои контакты ({len(contacts)}):</b>", parse_mode="HTML")
 
-        # Send each contact as a separate message with buttons
-        for contact in contacts:
-            await send_contact_card(update.message, contact)
+    # Send each contact as a separate message with buttons
+    for contact in contacts:
+        await send_contact_card(update.message, contact)
 
 
 async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -176,12 +144,12 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(
         "➕ <b>Добавление контакта</b>\n\n"
         "Отправь данные в формате:\n"
-        "<code>@username описание контакта. частота</code>\n\n"
+        "<code>@username описание контакта</code>\n\n"
         "Примеры:\n"
-        "• <code>@ivan коллега из маркетинга. раз в неделю</code>\n"
-        "• <code>@anna друг детства. раз в месяц</code>\n"
+        "• <code>@ivan коллега из маркетинга</code>\n"
+        "• <code>@anna друг детства</code>\n"
         "• <code>@peter партнер по бизнесу</code>\n\n"
-        "💡 Если не указать частоту — напомню раз в 2 недели.",
+        "💡 Частоту напоминания выберешь на следующем шаге.",
         parse_mode="HTML",
     )
 
@@ -205,80 +173,80 @@ async def handle_edit_from_prompt(
     # Clear the editing flag
     context.user_data.pop("editing_contact", None)
 
-    async with get_session() as session:
-        contact_repo = ContactRepository(session)
-        contact = await contact_repo.get_by_id(UUID(contact_id_str))
+    client = await get_supabase()
+    contact_repo = ContactRepository(client)
+    contact = await contact_repo.get_by_id(UUID(contact_id_str))
 
-        if not contact or contact.user_id != user_id:
-            await update.message.reply_text("Контакт не найден.")
-            return True
+    if not contact or contact.user_id != user_id:
+        await update.message.reply_text("Контакт не найден.")
+        return True
 
-        # Use LLM to parse edit request with current contact context
-        ai_service = AIService()
-        parsed = await ai_service.parse_contact_edit(
-            edit_request=text,
-            current_description=contact.description or "",
-            current_tags=contact.tags or [],
-            current_frequency=contact.reminder_frequency or "biweekly",
-        )
+    # Use LLM to parse edit request with current contact context
+    ai_service = AIService()
+    parsed = await ai_service.parse_contact_edit(
+        edit_request=text,
+        current_description=contact.description or "",
+        current_tags=contact.tags or [],
+        current_frequency=contact.reminder_frequency or "biweekly",
+    )
 
-        if not parsed:
-            await update.message.reply_text("Не удалось определить, что обновить.")
-            return True
+    if not parsed:
+        await update.message.reply_text("Не удалось определить, что обновить.")
+        return True
 
-        updates = {}
+    updates = {}
 
-        # Update description if requested
-        if parsed.update_description and parsed.new_description:
-            updates["description"] = parsed.new_description
+    # Update description if requested
+    if parsed.update_description and parsed.new_description:
+        updates["description"] = parsed.new_description
 
-        # Update tags if requested
-        if parsed.update_tags and parsed.new_tags is not None:
-            updates["tags"] = parsed.new_tags
+    # Update tags if requested
+    if parsed.update_tags and parsed.new_tags is not None:
+        updates["tags"] = parsed.new_tags
 
-        # Update frequency if requested
-        if parsed.update_frequency and parsed.new_frequency_type:
-            updates["reminder_frequency"] = parsed.new_frequency_type
-            updates["custom_interval_days"] = parsed.new_custom_days
+    # Update frequency if requested
+    if parsed.update_frequency and parsed.new_frequency_type:
+        updates["reminder_frequency"] = parsed.new_frequency_type
+        updates["custom_interval_days"] = parsed.new_custom_days
 
-            # Handle one-time reminder with date
-            if parsed.new_frequency_type == "one_time" and parsed.new_reminder_date:
-                try:
-                    one_time_date = date.fromisoformat(parsed.new_reminder_date)
-                    updates["next_reminder_date"] = one_time_date
-                    updates["one_time_date"] = one_time_date
-                    updates["status"] = "one_time"
-                except ValueError:
-                    pass
-            else:
-                new_next = calculate_next_reminder(parsed.new_frequency_type, parsed.new_custom_days)
-                updates["next_reminder_date"] = new_next
-                if contact.status == "one_time":
-                    updates["status"] = "active"
-
-        if updates:
-            await contact_repo.update(contact, **updates)
-
-            # Refresh contact to get updated values
-            updated_contact = await contact_repo.get_by_id(contact.id)
-
-            # Format full contact card (escape user text but not username)
-            safe_desc = html_escape(updated_contact.description) if updated_contact.description else "не указано"
-            safe_tags = html_escape(" ".join(updated_contact.tags)) if updated_contact.tags else "—"
-            freq_text = format_frequency(updated_contact.reminder_frequency, updated_contact.custom_interval_days)
-            next_date = updated_contact.next_reminder_date.strftime("%d.%m.%Y") if updated_contact.next_reminder_date else "—"
-
-            await update.message.reply_text(
-                f"✅ <b>Контакт обновлён!</b>\n\n"
-                f"<b>@{updated_contact.username}</b>\n"
-                f"📝 {safe_desc}\n"
-                f"🏷 {safe_tags}\n\n"
-                f"🔔 Напоминание: {freq_text}\n"
-                f"📅 Следующее: {next_date}",
-                parse_mode="HTML",
-            )
+        # Handle one-time reminder with date
+        if parsed.new_frequency_type == "one_time" and parsed.new_reminder_date:
+            try:
+                one_time_date = date.fromisoformat(parsed.new_reminder_date)
+                updates["next_reminder_date"] = one_time_date
+                updates["one_time_date"] = one_time_date
+                updates["status"] = "one_time"
+            except ValueError:
+                pass
         else:
-            await update.message.reply_text("Не удалось определить, что обновить.")
+            new_next = calculate_next_reminder(parsed.new_frequency_type, parsed.new_custom_days)
+            updates["next_reminder_date"] = new_next
+            if contact.status == "one_time":
+                updates["status"] = "active"
+
+    if updates:
+        await contact_repo.update(contact.id, **updates)
+
+        # Refresh contact to get updated values
+        updated_contact = await contact_repo.get_by_id(contact.id)
+
+        # Format full contact card (escape user text but not username)
+        safe_desc = html_escape(updated_contact.description) if updated_contact.description else "не указано"
+        safe_tags = html_escape(" ".join(updated_contact.tags)) if updated_contact.tags else "—"
+        freq_text = format_frequency(updated_contact.reminder_frequency, updated_contact.custom_interval_days)
+        next_date = updated_contact.next_reminder_date.strftime("%d.%m.%Y") if updated_contact.next_reminder_date else "—"
+
+        await update.message.reply_text(
+            f"✅ <b>Контакт обновлён!</b>\n\n"
+            f"<b>@{updated_contact.username}</b>\n"
+            f"📝 {safe_desc}\n"
+            f"🏷 {safe_tags}\n\n"
+            f"🔔 Напоминание: {freq_text}\n"
+            f"📅 Следующее: {next_date}",
+            parse_mode="HTML",
+        )
+    else:
+        await update.message.reply_text("Не удалось определить, что обновить.")
 
     return True
 
@@ -290,33 +258,33 @@ async def edit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         username = context.args[0].lstrip("@")
         user_id = update.effective_user.id
 
-        async with get_session() as session:
-            contact_repo = ContactRepository(session)
-            contact = await contact_repo.get_by_username(user_id, username)
+        client = await get_supabase()
+        contact_repo = ContactRepository(client)
+        contact = await contact_repo.get_by_username(user_id, username)
 
-            if not contact:
-                await update.message.reply_text(f"Контакт @{username} не найден.")
-                return
+        if not contact:
+            await update.message.reply_text(f"Контакт @{username} не найден.")
+            return
 
-            context.user_data["editing_contact"] = str(contact.id)
+        context.user_data["editing_contact"] = str(contact.id)
 
-            # Escape HTML in user-provided text
-            safe_desc = html_escape(contact.description) if contact.description else "не указано"
-            safe_tags = html_escape(' '.join(contact.tags)) if contact.tags else "—"
-            freq_text = format_frequency(contact.reminder_frequency, contact.custom_interval_days)
+        # Escape HTML in user-provided text
+        safe_desc = html_escape(contact.description) if contact.description else "не указано"
+        safe_tags = html_escape(' '.join(contact.tags)) if contact.tags else "—"
+        freq_text = format_frequency(contact.reminder_frequency, contact.custom_interval_days)
 
-            await update.message.reply_text(
-                f"✏️ <b>Редактирование @{username}</b>\n\n"
-                f"📝 Описание: <i>{safe_desc}</i>\n"
-                f"🏷 Теги: {safe_tags}\n"
-                f"🔔 Напоминание: {freq_text}\n\n"
-                "Отправь новые данные:\n"
-                "• Новое описание\n"
-                "• Или новую частоту (раз в неделю, раз в месяц...)\n"
-                "• Или теги (#tag1 #tag2)\n\n"
-                "Отправь /cancel для отмены.",
-                parse_mode="HTML",
-            )
+        await update.message.reply_text(
+            f"✏️ <b>Редактирование @{username}</b>\n\n"
+            f"📝 Описание: <i>{safe_desc}</i>\n"
+            f"🏷 Теги: {safe_tags}\n"
+            f"🔔 Напоминание: {freq_text}\n\n"
+            "Отправь новые данные:\n"
+            "• Новое описание\n"
+            "• Или новую частоту (раз в неделю, раз в месяц...)\n"
+            "• Или теги (#tag1 #tag2)\n\n"
+            "Отправь /cancel для отмены.",
+            parse_mode="HTML",
+        )
     else:
         await update.message.reply_text(
             "✏️ <b>Редактирование контакта</b>\n\n"

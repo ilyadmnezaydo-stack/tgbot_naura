@@ -1,103 +1,29 @@
-import uuid
-from datetime import datetime
-
-from sqlalchemy import (
-    BigInteger,
-    CheckConstraint,
-    Column,
-    Date,
-    DateTime,
-    ForeignKey,
-    Integer,
-    String,
-    Text,
-    UniqueConstraint,
-)
-from sqlalchemy.dialects.postgresql import ARRAY, UUID
-from sqlalchemy.orm import DeclarativeBase, relationship
+"""
+Helpers to convert Supabase dict responses to SimpleNamespace objects.
+Preserves dot-notation access (contact.username, contact.id, etc.).
+"""
+from datetime import date, datetime
+from types import SimpleNamespace
 
 
-class Base(DeclarativeBase):
-    pass
+def _parse_value(key: str, value):
+    """Parse ISO date/datetime strings back to Python objects."""
+    if value is None:
+        return None
+    if key in ("next_reminder_date", "one_time_date") and isinstance(value, str):
+        return date.fromisoformat(value)
+    if key in ("created_at", "updated_at", "last_contacted_at") and isinstance(value, str):
+        return datetime.fromisoformat(value)
+    return value
 
 
-class User(Base):
-    __tablename__ = "users"
-
-    id = Column(BigInteger, primary_key=True)  # Telegram user_id
-    username = Column(String(255), nullable=True)
-    first_name = Column(String(255), nullable=True)
-    language_code = Column(String(10), default="ru")
-    timezone = Column(String(50), default="Europe/Moscow")
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-    updated_at = Column(
-        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
-    )
-
-    contacts = relationship(
-        "Contact", back_populates="user", cascade="all, delete-orphan"
-    )
-
-    def __repr__(self) -> str:
-        return f"<User(id={self.id}, username={self.username})>"
+def to_record(row: dict | None) -> SimpleNamespace | None:
+    """Convert a single Supabase response dict to SimpleNamespace."""
+    if row is None:
+        return None
+    return SimpleNamespace(**{k: _parse_value(k, v) for k, v in row.items()})
 
 
-class Contact(Base):
-    __tablename__ = "contacts"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(
-        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
-    )
-    username = Column(String(255), nullable=False)
-    display_name = Column(String(255), nullable=True)  # Full name from Telegram profile
-    description = Column(Text, nullable=True)
-    tags = Column(ARRAY(Text), default=[])
-    reminder_frequency = Column(
-        String(50), default="biweekly"
-    )  # daily, weekly, biweekly, monthly, custom, one_time
-    custom_interval_days = Column(Integer, nullable=True)
-    next_reminder_date = Column(Date, nullable=True)
-    last_contacted_at = Column(DateTime(timezone=True), nullable=True)
-    status = Column(String(20), default="active")  # active, paused, one_time
-    one_time_date = Column(Date, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-    updated_at = Column(
-        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
-    )
-
-    user = relationship("User", back_populates="contacts")
-    history = relationship(
-        "ContactHistory", back_populates="contact", cascade="all, delete-orphan"
-    )
-
-    __table_args__ = (
-        UniqueConstraint("user_id", "username", name="unique_user_contact"),
-        CheckConstraint(
-            "status IN ('active', 'paused', 'one_time')", name="check_status"
-        ),
-    )
-
-    def __repr__(self) -> str:
-        return f"<Contact(id={self.id}, username={self.username}, status={self.status})>"
-
-
-class ContactHistory(Base):
-    __tablename__ = "contact_history"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    contact_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("contacts.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    action = Column(
-        String(50), nullable=False
-    )  # contacted, reminder_sent, paused, resumed
-    notes = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-
-    contact = relationship("Contact", back_populates="history")
-
-    def __repr__(self) -> str:
-        return f"<ContactHistory(id={self.id}, action={self.action})>"
+def to_records(rows: list[dict]) -> list[SimpleNamespace]:
+    """Convert a list of Supabase response dicts to SimpleNamespace objects."""
+    return [to_record(row) for row in rows]

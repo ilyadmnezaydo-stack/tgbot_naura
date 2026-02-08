@@ -61,23 +61,23 @@ async def handle_forwarded_message(
         return
 
     # Check if contact already exists
-    from src.db.engine import get_session
+    from src.db.engine import get_supabase
     from src.db.repositories.contacts import ContactRepository
 
     user_id = update.effective_user.id
 
-    async with get_session() as session:
-        contact_repo = ContactRepository(session)
-        existing = await contact_repo.get_by_username(user_id, username)
+    client = await get_supabase()
+    contact_repo = ContactRepository(client)
+    existing = await contact_repo.get_by_username(user_id, username)
 
-        if existing:
-            # Show existing contact with update options
-            await update.message.reply_text(
-                format_existing_contact_found(username),
-                parse_mode="HTML",
-                reply_markup=get_existing_contact_keyboard(str(existing.id)),
-            )
-            return
+    if existing:
+        # Show existing contact with update options
+        await update.message.reply_text(
+            format_existing_contact_found(username),
+            parse_mode="HTML",
+            reply_markup=get_existing_contact_keyboard(str(existing.id)),
+        )
+        return
 
     # Store pending contact info in user_data for follow-up
     context.user_data["pending_contact"] = {

@@ -25,7 +25,7 @@ from src.bot.keyboards import get_confirm_add_username_keyboard
 from src.bot.messages import format_reminder_set
 from src.bot.parsers.frequency import format_frequency, parse_date
 from src.config import settings
-from src.db.engine import get_session
+from src.db.engine import get_supabase
 from src.db.repositories.contacts import ContactRepository
 from src.scheduler.setup import setup_scheduler
 
@@ -53,15 +53,15 @@ async def check_and_offer_username_contact(update: Update, context, text: str) -
     user_id = update.effective_user.id
 
     # Check if contact already exists
-    async with get_session() as session:
-        repo = ContactRepository(session)
-        existing = await repo.get_by_username(user_id, username)
+    client = await get_supabase()
+    repo = ContactRepository(client)
+    existing = await repo.get_by_username(user_id, username)
 
-        if existing:
-            await update.message.reply_text(
-                f"Контакт @{username} уже существует в твоём списке."
-            )
-            return True
+    if existing:
+        await update.message.reply_text(
+            f"Контакт @{username} уже существует в твоём списке."
+        )
+        return True
 
     # Offer to add the contact
     await update.message.reply_text(
@@ -148,25 +148,25 @@ async def handle_custom_interval_input(update: Update, context) -> None:
 
     next_date = date.today() + timedelta(days=days)
 
-    async with get_session() as session:
-        repo = ContactRepository(session)
-        contact = await repo.get_by_id(UUID(contact_id))
+    client = await get_supabase()
+    repo = ContactRepository(client)
+    contact = await repo.get_by_id(UUID(contact_id))
 
-        if contact:
-            await repo.update(
-                contact,
-                reminder_frequency="custom",
-                custom_interval_days=days,
-                next_reminder_date=next_date,
-                status="active",
-            )
+    if contact:
+        await repo.update(
+            contact.id,
+            reminder_frequency="custom",
+            custom_interval_days=days,
+            next_reminder_date=next_date,
+            status="active",
+        )
 
-            freq_text = format_frequency("custom", days)
-            await update.message.reply_text(
-                format_reminder_set(contact.username, freq_text, next_date.strftime("%d.%m.%Y")),
-                parse_mode="HTML",
-            )
-            await send_contact_card(update.message, await repo.get_by_id(UUID(contact_id)))
+        freq_text = format_frequency("custom", days)
+        await update.message.reply_text(
+            format_reminder_set(contact.username, freq_text, next_date.strftime("%d.%m.%Y")),
+            parse_mode="HTML",
+        )
+        await send_contact_card(update.message, await repo.get_by_id(UUID(contact_id)))
 
 
 async def handle_custom_date_input(update: Update, context) -> None:
@@ -210,24 +210,24 @@ async def handle_custom_date_input(update: Update, context) -> None:
         context.user_data["awaiting_custom_date"] = contact_id
         return
 
-    async with get_session() as session:
-        repo = ContactRepository(session)
-        contact = await repo.get_by_id(UUID(contact_id))
+    client = await get_supabase()
+    repo = ContactRepository(client)
+    contact = await repo.get_by_id(UUID(contact_id))
 
-        if contact:
-            await repo.update(
-                contact,
-                reminder_frequency="one_time",
-                next_reminder_date=reminder_date,
-                one_time_date=reminder_date,
-                status="one_time",
-            )
+    if contact:
+        await repo.update(
+            contact.id,
+            reminder_frequency="one_time",
+            next_reminder_date=reminder_date,
+            one_time_date=reminder_date,
+            status="one_time",
+        )
 
-            await update.message.reply_text(
-                format_reminder_set(contact.username, "однократно", reminder_date.strftime("%d.%m.%Y")),
-                parse_mode="HTML",
-            )
-            await send_contact_card(update.message, await repo.get_by_id(UUID(contact_id)))
+        await update.message.reply_text(
+            format_reminder_set(contact.username, "однократно", reminder_date.strftime("%d.%m.%Y")),
+            parse_mode="HTML",
+        )
+        await send_contact_card(update.message, await repo.get_by_id(UUID(contact_id)))
 
 
 async def cancel_command(update: Update, context) -> None:

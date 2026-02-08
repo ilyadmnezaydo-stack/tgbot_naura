@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from src.config import settings
 
 if TYPE_CHECKING:
-    from src.db.models import Contact
+    from types import SimpleNamespace
 
 logger = logging.getLogger(__name__)
 
@@ -343,8 +343,8 @@ class AIService:
             return []
 
     async def semantic_search(
-        self, query: str, contacts: list["Contact"]
-    ) -> list["Contact"]:
+        self, query: str, contacts: list["SimpleNamespace"]
+    ) -> list["SimpleNamespace"]:
         """
         Use AI to find contacts matching the semantic query.
 
