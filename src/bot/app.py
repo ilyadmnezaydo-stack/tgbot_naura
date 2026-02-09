@@ -94,20 +94,20 @@ async def route_message(update: Update, context) -> None:
         await handle_custom_date_input(update, context)
         return
 
-    # 4. Check for awaiting_add (after /add or button press)
+    # 4. Check for editing_contact (after /edit or ✏️ button)
+    if context.user_data.get("editing_contact"):
+        await handle_edit_from_prompt(update, context)
+        return
+
+    # 5. Check for awaiting_add (after /add or button press)
     if context.user_data.get("awaiting_add"):
         await handle_add_from_prompt(update, context)
         return
 
-    # 5. Check for awaiting_search (after /search)
+    # 6. Check for awaiting_search (after /search)
     if context.user_data.get("awaiting_search"):
         context.user_data.pop("awaiting_search", None)
         await perform_search(update, context, text)
-        return
-
-    # 6. Check for editing_contact (after /edit or ✏️ button)
-    if context.user_data.get("editing_contact"):
-        await handle_edit_from_prompt(update, context)
         return
 
     # 7. Check for @username in message and offer to add as contact

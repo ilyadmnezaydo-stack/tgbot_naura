@@ -41,6 +41,8 @@ async def handle_menu_add(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     query = update.callback_query
     await query.answer()
 
+    context.user_data.pop("editing_contact", None)
+    context.user_data.pop("awaiting_search", None)
     context.user_data["awaiting_add"] = True
 
     await query.message.reply_text(
@@ -388,6 +390,8 @@ async def handle_update_description(update: Update, context: ContextTypes.DEFAUL
     contact = await repo.get_by_id(UUID(contact_id))
 
     if contact:
+        context.user_data.pop("awaiting_add", None)
+        context.user_data.pop("awaiting_search", None)
         context.user_data["editing_contact"] = contact_id
         context.user_data["editing_field"] = "description"
 
@@ -532,6 +536,8 @@ async def handle_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.message.edit_text("Контакт не найден.")
         return
 
+    context.user_data.pop("awaiting_add", None)
+    context.user_data.pop("awaiting_search", None)
     context.user_data["editing_contact"] = contact_id
 
     # Escape HTML in user-provided text
