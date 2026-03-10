@@ -67,6 +67,10 @@ docker run --env-file .env random-coffee-bot
 | `/menu` | Главное меню |
 | `/cancel` | Отменить текущую операцию |
 
+## Деплой
+
+Проект развёрнут на сервере, арендованном через [UFO Hosting](https://ufo.hosting/).
+
 ## Структура проекта
 
 ```
