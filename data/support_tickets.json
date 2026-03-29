@@ -1,0 +1,36 @@
+[
+  {
+    "id": "d630a614-1180-4d0a-8621-a48ff8de0ccb",
+    "user_id": 1917497493,
+    "user_username": "Libert_Flow",
+    "user_first_name": "🕴- можно просто Элайджа",
+    "question": "сам разбирайся",
+    "source": "initial",
+    "status": "answered",
+    "parent_ticket_id": null,
+    "ai_answer": null,
+    "admin_reply": "не хочу",
+    "admin_id": 1111340826,
+    "feedback": null,
+    "created_at": "2026-03-21T12:21:04.889180+03:00",
+    "updated_at": "2026-03-21T12:21:11.616227+03:00",
+    "answered_at": "2026-03-21T12:21:11.616227+03:00"
+  },
+  {
+    "id": "e1696cb8-865e-44b7-85a6-6064a78f592c",
+    "user_id": 1111340826,
+    "user_username": "Ilya_emmm",
+    "user_first_name": "Илья",
+    "question": "как мне добавить базу данных моих клиентов",
+    "source": "initial",
+    "status": "pending_admin",
+    "parent_ticket_id": null,
+    "ai_answer": null,
+    "admin_reply": null,
+    "admin_id": null,
+    "feedback": null,
+    "created_at": "2026-03-21T12:20:44.291010+03:00",
+    "updated_at": "2026-03-21T12:20:44.291010+03:00",
+    "answered_at": null
+  }
+]

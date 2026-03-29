@@ -1,5 +1,6 @@
 """
-AI Service - OpenAI integration for smart features.
+AI service for local OpenAI-compatible models.
+
 Used for:
 1. Parsing contact input (description, tags, frequency)
 2. Tag extraction from contact descriptions
@@ -7,11 +8,13 @@ Used for:
 """
 import json
 import logging
-from datetime import date
-from typing import TYPE_CHECKING, Optional
+import re
+import asyncio
+from datetime import date, timedelta
+from typing import TYPE_CHECKING, Any, Optional, TypeVar
 
-from openai import AsyncOpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
+import requests
 
 from src.config import settings
 
@@ -20,120 +23,280 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+ModelT = TypeVar("ModelT", bound=BaseModel)
+
 
 class ParsedContactInput(BaseModel):
-    """Structured output for contact parsing"""
-    description: str = Field(description="Описание контакта без информации о частоте напоминаний")
+    """Structured output for contact parsing."""
+
+    description: str = Field(
+        description="Описание контакта без информации о частоте напоминаний"
+    )
     tags: list[str] = Field(description="Теги в формате #tag, максимум 5")
     frequency_type: str = Field(
-        description="Тип частоты: daily, weekly, biweekly, monthly, custom, one_time. По умолчанию biweekly"
+        description=(
+            "Тип частоты: daily, weekly, biweekly, monthly, custom, one_time. "
+            "По умолчанию biweekly"
+        )
     )
     custom_days: Optional[int] = Field(
         default=None,
-        description="Количество дней для custom частоты (например, 'через 10 дней' = 10)"
+        description="Количество дней для custom частоты",
     )
     reminder_date: Optional[str] = Field(
         default=None,
-        description="Дата напоминания в формате YYYY-MM-DD для one_time или относительных дат (сегодня, завтра)"
+        description="Дата напоминания в формате YYYY-MM-DD",
     )
 
 
 class ParsedContactEdit(BaseModel):
-    """Structured output for contact edit parsing"""
-    update_description: bool = Field(description="True если пользователь хочет изменить описание")
-    new_description: Optional[str] = Field(default=None, description="Новое описание (если update_description=True)")
+    """Structured output for contact edit parsing."""
+
+    update_description: bool = Field(
+        description="True если пользователь хочет изменить описание"
+    )
+    new_description: Optional[str] = Field(
+        default=None,
+        description="Новое описание",
+    )
     update_tags: bool = Field(description="True если пользователь хочет изменить теги")
-    new_tags: Optional[list[str]] = Field(default=None, description="Новые теги (если update_tags=True)")
-    update_frequency: bool = Field(description="True если пользователь хочет изменить частоту")
-    new_frequency_type: Optional[str] = Field(default=None, description="Новая частота")
-    new_custom_days: Optional[int] = Field(default=None, description="Дни для custom частоты")
-    new_reminder_date: Optional[str] = Field(default=None, description="Дата для one_time в формате YYYY-MM-DD")
+    new_tags: Optional[list[str]] = Field(default=None, description="Новые теги")
+    update_frequency: bool = Field(
+        description="True если пользователь хочет изменить частоту"
+    )
+    new_frequency_type: Optional[str] = Field(
+        default=None,
+        description="Новая частота",
+    )
+    new_custom_days: Optional[int] = Field(
+        default=None,
+        description="Дни для custom частоты",
+    )
+    new_reminder_date: Optional[str] = Field(
+        default=None,
+        description="Дата для one_time в формате YYYY-MM-DD",
+    )
 
 
 class ParsedDate(BaseModel):
-    """Structured output for date parsing"""
+    """Structured output for date parsing."""
+
     date: Optional[str] = Field(description="Распознанная дата в формате YYYY-MM-DD")
-    error: Optional[str] = Field(default=None, description="Сообщение об ошибке, если дату не удалось распознать")
+    error: Optional[str] = Field(
+        default=None,
+        description="Сообщение об ошибке, если дату не удалось распознать",
+    )
+
+
+class SupportTriage(BaseModel):
+    """Structured output for the first support response."""
+
+    is_complex: bool = Field(
+        description="True если вопрос лучше передать человеку"
+    )
+    answer: Optional[str] = Field(
+        default=None,
+        description="Короткий ответ пользователю, если вопрос простой",
+    )
+    category: str = Field(
+        description="Категория вопроса: howto, bug, payment, reminders, search, contacts, notes, other"
+    )
+    reason: Optional[str] = Field(
+        default=None,
+        description="Почему вопрос стоит передать человеку",
+    )
 
 
 class AIService:
-    """AI service for contact parsing, tag extraction, and semantic search"""
+    """AI service for contact parsing, tag extraction, and semantic search."""
 
     def __init__(self):
-        self.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-        self.model = settings.OPENAI_MODEL
+        self.base_url = settings.LLM_BASE_URL.rstrip("/")
+        self.api_key = settings.LLM_API_KEY
+        self.model = settings.LLM_MODEL
+
+    @staticmethod
+    def _normalize_tag(tag: str) -> str:
+        clean_tag = tag.lstrip("#").strip()
+        return f"#{clean_tag}" if clean_tag else ""
+
+    @staticmethod
+    def _strip_markdown_fences(text: str) -> str:
+        text = text.strip()
+        text = re.sub(r"^```(?:json)?\s*\n?", "", text)
+        text = re.sub(r"\n?```$", "", text).strip()
+        return text
+
+    @classmethod
+    def _extract_json_payload(cls, text: str) -> str:
+        cleaned = cls._strip_markdown_fences(text)
+
+        for opener, closer in (("{", "}"), ("[", "]")):
+            start = cleaned.find(opener)
+            end = cleaned.rfind(closer)
+            if start != -1 and end != -1 and end > start:
+                return cleaned[start : end + 1]
+
+        return cleaned
+
+    @staticmethod
+    def _message_to_text(message: Any) -> str:
+        if isinstance(message, dict):
+            content = message.get("content", "")
+            if isinstance(content, str):
+                return content.strip()
+
+        content = getattr(message, "content", "")
+        if isinstance(content, str):
+            return content.strip()
+
+        parts: list[str] = []
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict):
+                    text_value = item.get("text", "")
+                    if isinstance(text_value, dict):
+                        value = text_value.get("value") or text_value.get("content") or ""
+                        if value:
+                            parts.append(str(value))
+                    elif text_value:
+                        parts.append(str(text_value))
+                    continue
+
+                text_value = getattr(item, "text", "")
+                if isinstance(text_value, str) and text_value:
+                    parts.append(text_value)
+                    continue
+
+                value = getattr(text_value, "value", "")
+                if value:
+                    parts.append(str(value))
+
+        return "\n".join(parts).strip()
+
+    async def _complete(self, system_prompt: str, user_prompt: str) -> str:
+        last_error: Exception | None = None
+
+        for attempt in range(3):
+            try:
+                response = await asyncio.to_thread(
+                    requests.post,
+                    f"{self.base_url}/chat/completions",
+                    headers={"Content-Type": "application/json"},
+                    json={
+                        "model": self.model,
+                        "temperature": 0,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                    },
+                    timeout=120,
+                )
+
+                if response.status_code == 503 and attempt < 2:
+                    await asyncio.sleep(2 * (attempt + 1))
+                    continue
+
+                response.raise_for_status()
+                data = response.json()
+                message = data["choices"][0]["message"]
+                return self._message_to_text(message)
+            except Exception as e:
+                last_error = e
+                if getattr(e, "response", None) is not None and getattr(e.response, "status_code", None) == 503 and attempt < 2:
+                    await asyncio.sleep(2 * (attempt + 1))
+                    continue
+
+                if getattr(e, "status_code", None) != 503 or attempt == 2:
+                    raise
+
+                # Ollama can return 503 while the model is still loading into memory.
+                await asyncio.sleep(2 * (attempt + 1))
+
+        raise last_error if last_error else RuntimeError("Completion failed")
+
+    async def _complete_model(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        model_cls: type[ModelT],
+    ) -> Optional[ModelT]:
+        try:
+            text = await self._complete(system_prompt, user_prompt)
+            payload = self._extract_json_payload(text)
+            data = json.loads(payload)
+            return model_cls.model_validate(data)
+        except (json.JSONDecodeError, ValidationError) as e:
+            logger.warning(f"Failed to parse model response for {model_cls.__name__}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Completion failed for {model_cls.__name__}: {e}")
+            return None
+
+    async def _complete_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+    ) -> Optional[Any]:
+        try:
+            text = await self._complete(system_prompt, user_prompt)
+            payload = self._extract_json_payload(text)
+            return json.loads(payload)
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse JSON response: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Completion failed: {e}")
+            return None
 
     async def parse_contact_input(self, text: str) -> Optional[ParsedContactInput]:
         """
-        Parse contact input using LLM with structured output.
-
-        Extracts:
-        - description (without frequency info)
-        - tags
-        - frequency type and custom days
-        - reminder date for one-time reminders
-
-        Args:
-            text: Raw input like "коллега из IT, Москва. напомни завтра"
-
-        Returns:
-            ParsedContactInput or None if parsing failed
+        Parse contact input using the local LLM and return structured data.
         """
         if not text or not text.strip():
             return None
 
         today = date.today()
+        tomorrow = today + timedelta(days=1)
+        day_after_tomorrow = today + timedelta(days=2)
 
-        try:
-            response = await self.client.beta.chat.completions.parse(
-                model=self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": f"""Ты парсер контактной информации. Сегодня: {today.isoformat()} ({today.strftime('%A')}).
+        system_prompt = f"""Ты парсер контактной информации.
+Сегодня: {today.isoformat()}.
 
-Извлеки из текста:
-1. **description** — описание контакта БЕЗ информации о частоте/дате напоминания. ВАЖНО: сохраняй все ссылки (URLs) в описании!
-2. **tags** — теги на основе описания (профессия, сфера, отношения, локация). Формат: #тег. Максимум 5.
-3. **frequency_type** — частота напоминаний:
-   - "daily" — каждый день, ежедневно
-   - "weekly" — раз в неделю, еженедельно
-   - "biweekly" — раз в 2 недели (по умолчанию если не указано)
-   - "monthly" — раз в месяц
-   - "custom" — через X дней, каждые X дней
-   - "one_time" — разово, один раз, конкретная дата, "сегодня", "завтра"
-4. **custom_days** — число дней для "custom" (например, "через 5 дней" = 5)
-5. **reminder_date** — дата в формате YYYY-MM-DD для:
-   - "сегодня" = {today.isoformat()}
-   - "завтра" = {(today + __import__('datetime').timedelta(days=1)).isoformat()}
-   - "послезавтра" = {(today + __import__('datetime').timedelta(days=2)).isoformat()}
-   - конкретные даты (15.01, 15 января, etc.)
-   - дни недели (понедельник = ближайший понедельник)
+Извлеки из текста JSON-объект строго такого вида:
+{{
+  "description": "строка",
+  "tags": ["#tag1", "#tag2"],
+  "frequency_type": "daily|weekly|biweekly|monthly|custom|one_time",
+  "custom_days": null,
+  "reminder_date": null
+}}
 
-Примеры:
-- "коллега из маркетинга" → description="коллега из маркетинга", frequency_type="biweekly"
-- "друг. раз в месяц" → description="друг", frequency_type="monthly"
-- "инвестор. напомни завтра" → description="инвестор", frequency_type="one_time", reminder_date=завтрашняя дата
-- "партнёр. через 10 дней" → description="партнёр", frequency_type="custom", custom_days=10
-- "ментор https://getmentor.dev/profile/123" → description="ментор https://getmentor.dev/profile/123", frequency_type="biweekly" (ссылка сохранена!)""",
-                    },
-                    {"role": "user", "content": text},
-                ],
-                response_format=ParsedContactInput,
-            )
+Правила:
+- description: описание контакта без информации о частоте/дате напоминания
+- обязательно сохраняй все ссылки (URLs) в description
+- tags: максимум 5 тегов, формат #tag
+- если частота не указана, используй "biweekly"
+- custom_days: число дней только для custom
+- reminder_date: YYYY-MM-DD только для one_time и относительных дат
+- "сегодня" = {today.isoformat()}
+- "завтра" = {tomorrow.isoformat()}
+- "послезавтра" = {day_after_tomorrow.isoformat()}
+- если какой-то части нет, ставь null или []
 
-            parsed = response.choices[0].message.parsed
-            if parsed:
-                # Ensure tags start with #
-                parsed.tags = [
-                    f"#{tag.lstrip('#')}" for tag in parsed.tags if tag
-                ][:5]
-                return parsed
+Верни только JSON без пояснений."""
+
+        parsed = await self._complete_model(system_prompt, text, ParsedContactInput)
+        if not parsed:
             return None
 
-        except Exception as e:
-            logger.error(f"Error parsing contact input: {e}")
-            return None
+        parsed.tags = [
+            normalized
+            for normalized in (self._normalize_tag(tag) for tag in parsed.tags)
+            if normalized
+        ][:5]
+        return parsed
 
     async def parse_contact_edit(
         self,
@@ -143,16 +306,7 @@ class AIService:
         current_frequency: str,
     ) -> Optional[ParsedContactEdit]:
         """
-        Parse edit request with context of current contact data.
-
-        Args:
-            edit_request: User's edit request like "раз в месяц" or "новое описание"
-            current_description: Current contact description
-            current_tags: Current contact tags
-            current_frequency: Current reminder frequency
-
-        Returns:
-            ParsedContactEdit indicating which fields to update
+        Parse edit request with current contact data as context.
         """
         if not edit_request or not edit_request.strip():
             return None
@@ -160,259 +314,202 @@ class AIService:
         today = date.today()
         tags_str = ", ".join(current_tags) if current_tags else "нет тегов"
 
-        try:
-            response = await self.client.beta.chat.completions.parse(
-                model=self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": f"""Ты помощник для редактирования контакта. Сегодня: {today.isoformat()}.
+        system_prompt = f"""Ты помощник для редактирования контакта.
+Сегодня: {today.isoformat()}.
 
-Текущие данные контакта:
-- Описание: "{current_description}"
-- Теги: {tags_str}
-- Частота: {current_frequency}
+Текущие данные:
+- description: {current_description!r}
+- tags: {tags_str}
+- frequency: {current_frequency}
 
-Пользователь хочет что-то изменить. Определи, ЧТО ИМЕННО он хочет изменить:
+Верни строго JSON-объект:
+{{
+  "update_description": true,
+  "new_description": null,
+  "update_tags": false,
+  "new_tags": null,
+  "update_frequency": false,
+  "new_frequency_type": null,
+  "new_custom_days": null,
+  "new_reminder_date": null
+}}
 
-1. Если упоминает новое описание/информацию о человеке → update_description=True
-2. Если упоминает теги (#тег) → update_tags=True
-3. Если упоминает частоту/дату (раз в месяц, завтра, через 5 дней) → update_frequency=True
+Правила:
+- меняй только то, что пользователь явно попросил
+- если меняется описание, сохрани URLs
+- new_tags: список тегов в формате #tag
+- частоты: daily, weekly, biweekly, monthly, custom, one_time
+- даты возвращай в формате YYYY-MM-DD
+- если поле не меняется, ставь false/null
 
-ВАЖНО: Меняй ТОЛЬКО то, что явно запрошено!
-- "раз в месяц" → меняем только частоту, НЕ трогаем описание и теги
-- "новый дизайнер" → меняем только описание, НЕ трогаем частоту
-- "#друг #москва" → меняем только теги
+Верни только JSON без пояснений."""
 
-ВАЖНО: Сохраняй все ссылки (URLs) в описании! Не удаляй их.
-
-Частоты: daily, weekly, biweekly, monthly, custom, one_time
-Для дат (сегодня, завтра, 15.01) используй one_time и reminder_date в формате YYYY-MM-DD.""",
-                    },
-                    {"role": "user", "content": edit_request},
-                ],
-                response_format=ParsedContactEdit,
-            )
-
-            parsed = response.choices[0].message.parsed
-            if parsed and parsed.new_tags:
-                # Ensure tags start with #
-                parsed.new_tags = [
-                    f"#{tag.lstrip('#')}" for tag in parsed.new_tags if tag
-                ][:5]
-            return parsed
-
-        except Exception as e:
-            logger.error(f"Error parsing contact edit: {e}")
+        parsed = await self._complete_model(system_prompt, edit_request, ParsedContactEdit)
+        if not parsed:
             return None
+
+        if parsed.new_tags:
+            parsed.new_tags = [
+                normalized
+                for normalized in (self._normalize_tag(tag) for tag in parsed.new_tags)
+                if normalized
+            ][:5]
+
+        return parsed
 
     async def parse_date(self, text: str) -> Optional[date]:
         """
-        Parse date from natural language using LLM.
-
-        Supports various formats:
-        - Relative: "завтра", "через неделю", "в следующую пятницу"
-        - Absolute: "15 февраля", "15.02", "15/02/2025"
-        - Natural: "в конце месяца", "на следующей неделе"
-
-        Args:
-            text: User input with date information
-
-        Returns:
-            date object or None if parsing failed
+        Parse a natural-language date into a date object.
         """
         if not text or not text.strip():
             return None
 
         today = date.today()
+        system_prompt = f"""Ты парсер дат.
+Сегодня: {today.isoformat()}.
 
-        try:
-            response = await self.client.beta.chat.completions.parse(
-                model=self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": f"""Ты парсер дат. Сегодня: {today.isoformat()} ({today.strftime('%A')}, {today.strftime('%d %B %Y')}).
+Верни строго JSON-объект:
+{{
+  "date": "YYYY-MM-DD или null",
+  "error": "сообщение или null"
+}}
 
-Распознай дату из текста пользователя и верни её в формате YYYY-MM-DD.
+Правила:
+- распознавай относительные даты: сегодня, завтра, послезавтра, через неделю
+- распознавай абсолютные даты: 15.02, 15 февраля, 2026-02-15
+- распознавай естественные формулировки: в пятницу, в конце месяца
+- date должна быть в будущем или сегодня
+- если распознать не удалось, верни date=null и заполни error
 
-Примеры:
-- "завтра" → {(today + __import__('datetime').timedelta(days=1)).isoformat()}
-- "послезавтра" → {(today + __import__('datetime').timedelta(days=2)).isoformat()}
-- "через неделю" → {(today + __import__('datetime').timedelta(days=7)).isoformat()}
-- "через 2 недели" → {(today + __import__('datetime').timedelta(days=14)).isoformat()}
-- "через месяц" → дата через ~30 дней
-- "15 февраля" → 2025-02-15 (или следующий год, если дата уже прошла)
-- "в пятницу" → ближайшая пятница
-- "в следующий понедельник" → понедельник следующей недели
-- "в конце месяца" → последний день текущего месяца
-- "1.03" или "01/03" → 2025-03-01
+Верни только JSON без пояснений."""
 
-ВАЖНО:
-- Дата должна быть в БУДУЩЕМ (после сегодня)
-- Если дата неоднозначная, выбирай ближайшую будущую
-- Если не можешь распознать, верни error с пояснением
-
-Верни date=null и error="сообщение" если:
-- Текст не содержит информации о дате
-- Дата в прошлом и не может быть интерпретирована как будущая""",
-                    },
-                    {"role": "user", "content": text},
-                ],
-                response_format=ParsedDate,
-            )
-
-            parsed = response.choices[0].message.parsed
-            if parsed and parsed.date:
-                try:
-                    return date.fromisoformat(parsed.date)
-                except ValueError:
-                    logger.warning(f"Invalid date format from AI: {parsed.date}")
-                    return None
+        parsed = await self._complete_model(system_prompt, text, ParsedDate)
+        if not parsed or not parsed.date:
             return None
 
-        except Exception as e:
-            logger.error(f"Error parsing date: {e}")
+        try:
+            return date.fromisoformat(parsed.date)
+        except ValueError:
+            logger.warning(f"Invalid date format from model: {parsed.date}")
             return None
 
     async def extract_tags(self, description: str) -> list[str]:
         """
-        Extract relevant tags from contact description.
-
-        Examples:
-            "работает в маркетинге" -> ["#marketing", "#работа"]
-            "друг из универа" -> ["#друг", "#универ"]
-            "инвестор, интересуется AI" -> ["#инвестор", "#AI", "#бизнес"]
-
-        Returns:
-            List of tags starting with #
+        Extract relevant tags from a contact description.
         """
         if not description or not description.strip():
             return []
 
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                reasoning_effort="minimal",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": """Ты помогаешь извлекать теги из описания контактов.
-Верни JSON массив тегов на основе описания.
+        system_prompt = """Ты извлекаешь теги из описания контакта.
+
+Верни только JSON-массив строк, например:
+["#IT", "#друг", "#Москва"]
 
 Правила:
-- Теги на русском или английском (если профессиональный термин)
-- Начинаются с #
-- Краткие (1-2 слова)
-- Отражают: профессию, отношения, интересы, локацию, сферу деятельности
-- Максимум 5 тегов
-- Используй популярные/понятные теги
+- максимум 5 тегов
+- короткие и понятные
+- формат всегда начинается с #
+- не добавляй пояснения и markdown"""
 
-Примеры:
-"коллега из IT отдела, любит футбол" -> ["#IT", "#коллега", "#футбол"]
-"подруга, живёт в Москве, дизайнер" -> ["#дизайн", "#друг", "#Москва"]
-"инвестор в стартапы, знакомый с конференции" -> ["#инвестор", "#стартапы", "#нетворкинг"]
-
-Верни только JSON массив, без объяснений.""",
-                    },
-                    {"role": "user", "content": description},
-                ],
-                max_completion_tokens=100,
-            )
-
-            tags_text = response.choices[0].message.content.strip()
-
-            # Parse JSON response
-            tags = json.loads(tags_text)
-
-            # Ensure all tags start with # and are valid
-            result = []
-            for tag in tags:
-                if isinstance(tag, str) and tag:
-                    clean_tag = tag.lstrip("#").strip()
-                    if clean_tag:
-                        result.append(f"#{clean_tag}")
-
-            return result[:5]  # Max 5 tags
-
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse AI response as JSON: {e}")
+        data = await self._complete_json(system_prompt, description)
+        if not isinstance(data, list):
             return []
-        except Exception as e:
-            logger.error(f"Error extracting tags: {e}")
-            return []
+
+        result = []
+        for tag in data:
+            if not isinstance(tag, str):
+                continue
+            normalized = self._normalize_tag(tag)
+            if normalized:
+                result.append(normalized)
+
+        return result[:5]
 
     async def semantic_search(
-        self, query: str, contacts: list["SimpleNamespace"]
+        self,
+        query: str,
+        contacts: list["SimpleNamespace"],
     ) -> list["SimpleNamespace"]:
         """
-        Use AI to find contacts matching the semantic query.
-
-        Args:
-            query: User's search query in natural language
-            contacts: List of user's contacts to search through
-
-        Returns:
-            List of matching contacts
+        Use the local LLM to find contacts matching a semantic query.
         """
         if not contacts:
             return []
 
-        # Prepare contacts info for AI
-        contacts_info = []
-        for c in contacts:
-            info = {
-                "username": c.username,
-                "description": c.description or "",
-                "tags": c.tags or [],
+        contacts_info = [
+            {
+                "username": contact.username,
+                "description": contact.description or "",
+                "tags": contact.tags or [],
             }
-            contacts_info.append(info)
+            for contact in contacts
+        ]
 
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                reasoning_effort="low",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": """Ты помогаешь искать контакты по запросу пользователя.
+        system_prompt = """Ты помогаешь искать контакты по запросу пользователя.
 
-Проанализируй список контактов и верни JSON массив username тех, кто соответствует запросу.
-
-Учитывай:
-- Описание контакта
-- Теги
-- Прямые синонимы (например, "IT" включает "программист", "разработчик", "developer")
+Верни только JSON-массив username, например:
+["ivan", "anna"]
 
 Правила:
-- Верни ТОЛЬКО тех, кто КОНКРЕТНО подходит под запрос
-- Контакт должен содержать прямое упоминание или очевидный синоним запроса
-- НЕ расширяй запрос до смежных тем (например, "Корея" ≠ "Китай", "маркетинг" ≠ "продажи")
-- Лучше вернуть меньше, но точных результатов
-- Если никто не подходит, верни пустой массив []
+- учитывай description, tags и очевидные синонимы
+- возвращай только действительно подходящие контакты
+- если совпадений нет, верни []"""
 
-Формат ответа: JSON массив username, например: ["ivan", "anna"]""",
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Запрос: {query}\n\nКонтакты:\n{json.dumps(contacts_info, ensure_ascii=False, indent=2)}",
-                    },
-                ],
-                max_completion_tokens=200,
-            )
-
-            result_text = response.choices[0].message.content.strip()
-
-            # Parse JSON response
-            matching_usernames = json.loads(result_text)
-
-            # Filter contacts by matching usernames (case-insensitive)
-            matching_usernames_lower = [u.lower() for u in matching_usernames]
-            return [c for c in contacts if c.username.lower() in matching_usernames_lower]
-
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse AI search response as JSON: {e}")
+        user_prompt = (
+            f"Запрос: {query}\n\n"
+            f"Контакты:\n{json.dumps(contacts_info, ensure_ascii=False, indent=2)}"
+        )
+        data = await self._complete_json(system_prompt, user_prompt)
+        if not isinstance(data, list):
             return []
-        except Exception as e:
-            logger.error(f"Error in semantic search: {e}")
-            return []
+
+        matching_usernames = [username.lower() for username in data if isinstance(username, str)]
+        return [
+            contact
+            for contact in contacts
+            if contact.username.lower() in matching_usernames
+        ]
+
+    async def triage_support_question(self, question: str) -> Optional[SupportTriage]:
+        """Answer simple support questions or mark them for human escalation."""
+        if not question or not question.strip():
+            return None
+
+        system_prompt = """Ты первая линия поддержки Telegram-бота для личного CRM по контактам.
+
+Бот умеет:
+- добавлять контакт через `@username описание`
+- добавлять контакт из пересланного сообщения
+- хранить описание, теги и частоту напоминаний
+- показывать список контактов и карточки
+- искать контакты по смыслу, тегам и имени
+- сохранять заметки после общения
+- принимать поддержку через Telegram Stars
+- показывать дашборд только владельцу бота
+
+Твоя задача: понять, можно ли уверенно ответить сразу.
+
+Считай вопрос сложным, если:
+- пользователь сообщает о баге, сбое, потере данных или странном поведении
+- нужен доступ администратора или ручная проверка
+- вопрос про оплату, возврат, ограничения Telegram или приватность
+- пользователь явно просит человека
+- ты не уверен в ответе
+
+Верни строго JSON:
+{
+  "is_complex": false,
+  "answer": "краткий ответ пользователю или null",
+  "category": "howto|bug|payment|reminders|search|contacts|notes|other",
+  "reason": "пояснение или null"
+}
+
+Правила:
+- если вопрос простой, answer должен быть полезным, коротким и понятным, без воды
+- если вопрос сложный, answer = null
+- не придумывай несуществующие функции
+- не используй markdown-таблицы и лишние вступления
+
+Верни только JSON без пояснений."""
+
+        return await self._complete_model(system_prompt, question, SupportTriage)

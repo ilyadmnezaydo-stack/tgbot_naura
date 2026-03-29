@@ -39,3 +39,8 @@ htmlcov/
 
 # Logs
 *.log
+
+# Local bot data
+data/contact_notes.json
+data/bot_analytics.json
+data/support_payments.json

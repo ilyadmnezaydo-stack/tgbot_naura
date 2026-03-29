@@ -1,52 +1,52 @@
 """
 Handler for forwarded messages.
-Extracts username from forwarded message and prompts user for description.
+Extracts username from a forwarded message and prepares contact creation.
 """
 from telegram import Update
 from telegram.ext import ContextTypes, MessageHandler, filters
 
-from src.bot.keyboards import get_confirm_contact_keyboard, get_existing_contact_keyboard
-from src.bot.messages import format_contact_preview, format_description_prompt, format_existing_contact_found
+from src.bot.input_text import get_input_text
+from src.bot.keyboards import (
+    BUTTON_CANCEL_ACTION,
+    get_confirm_contact_keyboard,
+    get_existing_contact_keyboard,
+    get_optional_context_keyboard,
+)
+from src.bot.messages import (
+    format_contact_preview,
+    format_description_prompt,
+    format_existing_contact_found,
+    format_optional_context_prompt,
+)
+from src.services.analytics_service import record_interaction
+from src.services.contact_enrichment import enrich_contact_data
 
 
 async def handle_forwarded_message(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """
-    Handle forwarded messages to extract username.
-
-    When user forwards a message from someone, we extract their username
-    and prompt the user to provide a description for the contact.
-    """
+    """Handle forwarded messages and try to extract the sender username."""
+    await record_interaction(update.effective_user.id)
     message = update.message
 
-    # Check if message has forward info
     if not message.forward_origin:
         return
 
     username = None
     display_name = None
-
-    # Try to extract username from forward origin
-    # python-telegram-bot v20+ uses forward_origin
     origin = message.forward_origin
 
-    # Check origin type
     if hasattr(origin, "sender_user") and origin.sender_user:
-        # MessageOriginUser - forwarded from a user
         sender = origin.sender_user
         username = sender.username
-        # Build full name from first_name + last_name
         display_name = sender.first_name or ""
         if sender.last_name:
             display_name = f"{display_name} {sender.last_name}".strip()
         if not display_name:
             display_name = sender.username or "Unknown"
     elif hasattr(origin, "sender_user_name"):
-        # MessageOriginHiddenUser - user hid forwarding, only name available
         display_name = origin.sender_user_name
     elif hasattr(origin, "chat") and origin.chat:
-        # MessageOriginChat - forwarded from a chat/channel
         chat = origin.chat
         username = chat.username
         display_name = chat.title or chat.username or "Unknown"
@@ -54,24 +54,21 @@ async def handle_forwarded_message(
     if not username:
         await update.message.reply_text(
             "Не удалось определить username отправителя.\n"
-            "Возможно, у пользователя скрыт профиль или это анонимное сообщение.\n\n"
-            "Добавь контакт вручную через /add",
+            "Возможно, профиль скрыт или сообщение было отправлено анонимно.\n\n"
+            "Если хочешь, добавь контакт вручную через кнопку «✨ Добавить».",
             parse_mode="HTML",
         )
         return
 
-    # Check if contact already exists
     from src.db.engine import get_supabase
     from src.db.repositories.contacts import ContactRepository
 
     user_id = update.effective_user.id
-
     client = await get_supabase()
     contact_repo = ContactRepository(client)
     existing = await contact_repo.get_by_username(user_id, username)
 
     if existing:
-        # Show existing contact with update options
         await update.message.reply_text(
             format_existing_contact_found(username),
             parse_mode="HTML",
@@ -79,10 +76,10 @@ async def handle_forwarded_message(
         )
         return
 
-    # Store pending contact info in user_data for follow-up
     context.user_data["pending_contact"] = {
         "username": username.lower(),
         "display_name": display_name,
+        "source": "forwarded",
     }
 
     await update.message.reply_text(
@@ -95,55 +92,64 @@ async def handle_pending_contact_description(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> bool:
     """
-    Handle description input after forwarded message.
-    Uses LLM to parse description and tags.
-    Shows preview with confirmation buttons.
-
-    Returns True if there was a pending contact and it was processed.
+    Handle description input after a forwarded message.
+    Returns True if there was a pending contact flow and it was processed.
     """
-    from src.services.ai_service import AIService
-
     pending = context.user_data.get("pending_contact")
     if not pending:
         return False
 
-    text = update.message.text
+    text = get_input_text(update, context)
+    if not text:
+        return True
 
-    # Check for cancel
-    if text.lower() in ["/cancel", "отмена", "cancel"]:
+    if text.lower() in ["/cancel", "отмена", "cancel", BUTTON_CANCEL_ACTION.lower()]:
         del context.user_data["pending_contact"]
-        await update.message.reply_text("Отменено.")
+        await update.message.reply_text("Шаг отменён. Можно выбрать другой сценарий.")
         return True
 
     username = pending["username"]
     display_name = pending.get("display_name")
+    source = pending.get("source", "forwarded")
 
-    # Parse input using LLM (description, tags only - no frequency here)
-    ai_service = AIService()
-    parsed = await ai_service.parse_contact_input(text)
+    if pending.get("awaiting_context_choice"):
+        await update.message.reply_text(
+            format_optional_context_prompt(username, display_name),
+            parse_mode="HTML",
+            reply_markup=get_optional_context_keyboard(),
+        )
+        return True
 
-    if not parsed:
-        # Fallback to simple mode
-        description = text
-        tags = []
-    else:
-        description = parsed.description
-        tags = parsed.tags
+    pending["awaiting_context_choice"] = False
 
-    # Store draft contact for confirmation
+    enriched = await enrich_contact_data(
+        username=username,
+        raw_description=text,
+        suggested_display_name=display_name,
+    )
+
     context.user_data["draft_contact"] = {
         "username": username,
-        "display_name": display_name,
-        "description": description,
-        "tags": tags,
+        "display_name": enriched.display_name or display_name,
+        "description": enriched.description,
+        "tags": enriched.tags,
+        "birthday_day": enriched.birthday_day,
+        "birthday_month": enriched.birthday_month,
+        "birthday_year": enriched.birthday_year,
+        "source": source,
     }
-
-    # Clear pending, keep draft
     del context.user_data["pending_contact"]
 
-    # Show preview with confirmation buttons
     await update.message.reply_text(
-        format_contact_preview(username, description, tags, display_name),
+        format_contact_preview(
+            username,
+            enriched.description,
+            enriched.tags,
+            enriched.display_name or display_name,
+            birthday_day=enriched.birthday_day,
+            birthday_month=enriched.birthday_month,
+            birthday_year=enriched.birthday_year,
+        ),
         parse_mode="HTML",
         reply_markup=get_confirm_contact_keyboard(),
     )
@@ -152,7 +158,7 @@ async def handle_pending_contact_description(
 
 
 def get_forwarded_handler():
-    """Return forwarded message handler"""
+    """Return the forwarded-message handler."""
     return MessageHandler(
         filters.FORWARDED & ~filters.COMMAND,
         handle_forwarded_message,

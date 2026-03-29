@@ -17,6 +17,9 @@ class ContactRepository(BaseRepository):
         description: Optional[str] = None,
         display_name: Optional[str] = None,
         tags: Optional[list[str]] = None,
+        birthday_day: Optional[int] = None,
+        birthday_month: Optional[int] = None,
+        birthday_year: Optional[int] = None,
         reminder_frequency: str = "biweekly",
         custom_interval_days: Optional[int] = None,
         next_reminder_date: Optional[date] = None,
@@ -29,6 +32,9 @@ class ContactRepository(BaseRepository):
             "display_name": display_name,
             "description": description,
             "tags": tags or [],
+            "birthday_day": birthday_day,
+            "birthday_month": birthday_month,
+            "birthday_year": birthday_year,
             "reminder_frequency": reminder_frequency,
             "custom_interval_days": custom_interval_days,
             "next_reminder_date": next_reminder_date.isoformat() if next_reminder_date else None,
@@ -71,6 +77,26 @@ class ContactRepository(BaseRepository):
         )
         return to_records(result.data)
 
+    async def get_all(self) -> list[SimpleNamespace]:
+        """Return all contacts across all bot users."""
+        result = await self.client.table(self.TABLE).select("*").execute()
+        return to_records(result.data or [])
+
+    async def count_all_contacts(self) -> int:
+        """Return the total number of contacts stored in the database."""
+        result = await self.client.table(self.TABLE).select("id").execute()
+        return len(result.data or [])
+
+    async def count_active_contacts(self) -> int:
+        """Return the number of contacts that currently have active reminders."""
+        result = (
+            await self.client.table(self.TABLE)
+            .select("id")
+            .eq("status", "active")
+            .execute()
+        )
+        return len(result.data or [])
+
     async def get_due_today(self, target_date: date) -> list[SimpleNamespace]:
         """Get all contacts that are due for reminder today"""
         result = (
@@ -94,6 +120,18 @@ class ContactRepository(BaseRepository):
             .execute()
         )
         return to_records(result.data)
+
+    async def get_birthdays_for_date(self, target_date: date) -> list[SimpleNamespace]:
+        """Return all contacts whose stored birthday matches the given month/day."""
+        result = (
+            await self.client.table(self.TABLE)
+            .select("*")
+            .in_("status", ["active", "one_time"])
+            .eq("birthday_day", target_date.day)
+            .eq("birthday_month", target_date.month)
+            .execute()
+        )
+        return to_records(result.data or [])
 
     async def update(self, contact_id, **kwargs) -> SimpleNamespace:
         """Update a contact by ID. Accepts string or UUID for contact_id."""

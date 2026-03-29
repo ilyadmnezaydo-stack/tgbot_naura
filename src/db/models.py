@@ -2,6 +2,7 @@
 Helpers to convert Supabase dict responses to SimpleNamespace objects.
 Preserves dot-notation access (contact.username, contact.id, etc.).
 """
+from decimal import Decimal
 from datetime import date, datetime
 from types import SimpleNamespace
 
@@ -12,8 +13,10 @@ def _parse_value(key: str, value):
         return None
     if key in ("next_reminder_date", "one_time_date") and isinstance(value, str):
         return date.fromisoformat(value)
-    if key in ("created_at", "updated_at", "last_contacted_at") and isinstance(value, str):
+    if key.endswith("_at") and isinstance(value, str):
         return datetime.fromisoformat(value)
+    if key in {"amount"} and isinstance(value, (int, float, str)):
+        return Decimal(str(value))
     return value
 
 

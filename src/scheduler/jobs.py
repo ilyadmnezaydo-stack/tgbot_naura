@@ -2,18 +2,39 @@
 Scheduled reminder jobs.
 """
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date
 from types import SimpleNamespace
 from typing import Dict, List
 
 from telegram.ext import ContextTypes
 
 from src.bot.handlers.callbacks import send_contact_card_to_chat
-from src.config import settings
+from src.bot.messages import format_birthday_badge
 from src.db.engine import get_supabase
 from src.db.repositories.contacts import ContactRepository
 
 logger = logging.getLogger(__name__)
+
+
+def _group_contacts_by_user(contacts: list[SimpleNamespace]) -> Dict[int, List[SimpleNamespace]]:
+    """Group a flat contact list by owner user_id."""
+    grouped: Dict[int, List[SimpleNamespace]] = {}
+    for contact in contacts:
+        grouped.setdefault(contact.user_id, []).append(contact)
+    return grouped
+
+
+def _build_birthday_prefix(contact: SimpleNamespace, today: date) -> str:
+    """Build a short birthday banner for a contact card."""
+    birthday_text = format_birthday_badge(
+        getattr(contact, "birthday_day", None),
+        getattr(contact, "birthday_month", None),
+        getattr(contact, "birthday_year", None),
+        today=today,
+    )
+    if birthday_text:
+        return f"🎂 <b>Сегодня день рождения</b>\n{birthday_text}"
+    return "🎂 <b>Сегодня день рождения</b>"
 
 
 async def morning_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -27,33 +48,52 @@ async def morning_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     client = await get_supabase()
     repo = ContactRepository(client)
     due_contacts = await repo.get_due_today(today)
+    birthday_contacts = await repo.get_birthdays_for_date(today)
 
-    if not due_contacts:
-        logger.info("No contacts due today")
+    if not due_contacts and not birthday_contacts:
+        logger.info("No contacts due today and no birthdays today")
         return
 
-    # Group contacts by user_id
-    user_contacts: Dict[int, List[SimpleNamespace]] = {}
-    for contact in due_contacts:
-        if contact.user_id not in user_contacts:
-            user_contacts[contact.user_id] = []
-        user_contacts[contact.user_id].append(contact)
+    due_by_user = _group_contacts_by_user(due_contacts)
+    birthdays_by_user = _group_contacts_by_user(birthday_contacts)
+    all_user_ids = sorted(set(due_by_user) | set(birthdays_by_user))
 
-    # Send reminders to each user
-    for user_id, contacts in user_contacts.items():
+    for user_id in all_user_ids:
         try:
-            # Send header
-            await context.bot.send_message(
-                chat_id=user_id,
-                text="☀️ <b>Доброе утро!</b> Сегодня стоит написать:",
-                parse_mode="HTML",
+            birthdays = birthdays_by_user.get(user_id, [])
+            due_today = due_by_user.get(user_id, [])
+            birthday_ids = {contact.id for contact in birthdays}
+            regular_due = [contact for contact in due_today if contact.id not in birthday_ids]
+
+            if birthdays:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="🎂 <b>Сегодня есть день рождения</b>\nМожно поздравить:",
+                    parse_mode="HTML",
+                )
+                for contact in birthdays:
+                    await send_contact_card_to_chat(
+                        context.bot,
+                        user_id,
+                        contact,
+                        prefix=_build_birthday_prefix(contact, today),
+                    )
+
+            if regular_due:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="☀️ <b>Доброе утро!</b> Сегодня стоит написать:",
+                    parse_mode="HTML",
+                )
+                for contact in regular_due:
+                    await send_contact_card_to_chat(context.bot, user_id, contact)
+
+            logger.info(
+                "Sent morning notifications to user %s: birthdays=%s regular_due=%s",
+                user_id,
+                len(birthdays),
+                len(regular_due),
             )
-
-            # Send each contact as a card with buttons
-            for c in contacts:
-                await send_contact_card_to_chat(context.bot, user_id, c)
-
-            logger.info(f"Sent morning reminder to user {user_id} for {len(contacts)} contacts")
 
         except Exception as e:
             logger.error(f"Failed to send morning reminder to {user_id}: {e}")
@@ -75,12 +115,7 @@ async def evening_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.info("No overdue contacts")
         return
 
-    # Group contacts by user_id
-    user_contacts: Dict[int, List[SimpleNamespace]] = {}
-    for contact in overdue:
-        if contact.user_id not in user_contacts:
-            user_contacts[contact.user_id] = []
-        user_contacts[contact.user_id].append(contact)
+    user_contacts = _group_contacts_by_user(overdue)
 
     # Send reminders to each user
     for user_id, contacts in user_contacts.items():
