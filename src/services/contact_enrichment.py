@@ -38,9 +38,11 @@ _KEYWORD_TAGS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b(друг|подруг|приятел|знаком)\w*", re.IGNORECASE), "#друзья"),
     (re.compile(r"\b(семь|мама|папа|брат|сестр|родн)\w*", re.IGNORECASE), "#семья"),
     (re.compile(r"\b(клиент|заказчик)\w*", re.IGNORECASE), "#клиенты"),
+    (re.compile(r"\b(бизнес|предприним|owner|ceo|coo|cfo|владелец|директор)\w*", re.IGNORECASE), "#бизнес"),
+    (re.compile(r"\b(москв|moscow|мск)\w*", re.IGNORECASE), "#москва"),
     (
         re.compile(
-            r"\b(стартап|startup|фаундер|founder|основател|предприним|entrepreneur)\w*",
+            r"\b(стартап|startup|фаундер|founder|основател|entrepreneur)\w*",
             re.IGNORECASE,
         ),
         "#стартап",

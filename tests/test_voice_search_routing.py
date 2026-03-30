@@ -31,6 +31,36 @@ class VoiceSearchRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         perform_search.assert_awaited_once_with(update, context, "найди людей из маркетинга")
 
+    async def test_voice_override_can_trigger_search_via_ai_interpretation(self) -> None:
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=42),
+            message=SimpleNamespace(reply_text=AsyncMock()),
+        )
+        context = SimpleNamespace(user_data={"_input_text_override": "а у меня кто-нибудь из бизнеса в москве есть"})
+        ai_service = SimpleNamespace(
+            interpret_contact_search_request=AsyncMock(return_value="бизнес в москве"),
+        )
+
+        with (
+            patch("src.bot.app.handle_navigation_button", AsyncMock(return_value=False)),
+            patch("src.bot.app.record_interaction", AsyncMock()),
+            patch("src.bot.app.handle_cloudpayments_amount_input", AsyncMock(return_value=False)),
+            patch("src.bot.app.handle_donation_amount_input", AsyncMock(return_value=False)),
+            patch("src.bot.app.handle_pending_contact_description", AsyncMock(return_value=False)),
+            patch("src.bot.app.handle_contact_note_input", AsyncMock(return_value=False)),
+            patch("src.bot.app.handle_support_admin_reply_input", AsyncMock(return_value=False)),
+            patch("src.bot.app.handle_support_question_input", AsyncMock(return_value=False)),
+            patch("src.bot.app.handle_support_followup_input", AsyncMock(return_value=False)),
+            patch("src.bot.app.handle_contact_lookup_from_list", AsyncMock(return_value=False)),
+            patch("src.bot.app.check_and_offer_username_contact", AsyncMock(return_value=False)),
+            patch("src.bot.app.AIService", return_value=ai_service),
+            patch("src.bot.app.perform_search", AsyncMock()) as perform_search,
+        ):
+            await route_text_input(update, context, "а у меня кто-нибудь из бизнеса в москве есть", allow_navigation_buttons=False)
+
+        ai_service.interpret_contact_search_request.assert_awaited_once_with("а у меня кто-нибудь из бизнеса в москве есть")
+        perform_search.assert_awaited_once_with(update, context, "бизнес в москве")
+
     async def test_voice_search_mode_shows_recognized_query_before_routing(self) -> None:
         update = SimpleNamespace(
             effective_user=SimpleNamespace(id=42),

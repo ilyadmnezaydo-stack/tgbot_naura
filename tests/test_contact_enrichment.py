@@ -13,6 +13,12 @@ class ContactEnrichmentKeywordTagsTests(unittest.TestCase):
             ["#стартап"],
         )
 
+    def test_collect_keyword_tags_extracts_business_and_moscow(self) -> None:
+        self.assertEqual(
+            _collect_keyword_tags("владелец бизнеса из Москвы"),
+            ["#бизнес", "#москва"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

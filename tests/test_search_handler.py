@@ -26,6 +26,10 @@ class SearchHandlerTests(unittest.IsolatedAsyncioTestCase):
     def test_infer_query_tags_for_startup_roles(self) -> None:
         self.assertIn("#стартап", _infer_query_tags("кто у меня из стартаперов"))
 
+    def test_infer_query_tags_for_business_and_moscow(self) -> None:
+        tags = _infer_query_tags("покажи тех, кто занимается бизнесом в москве")
+        self.assertTrue({"#бизнес", "#москва"}.issubset(tags))
+
     def test_looks_like_search_query_detects_common_voice_intent(self) -> None:
         self.assertTrue(looks_like_search_query("найди людей из маркетинга"))
         self.assertFalse(looks_like_search_query("привет как дела"))
@@ -96,14 +100,57 @@ class SearchHandlerTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("src.bot.handlers.search.get_supabase", AsyncMock(return_value=object())),
             patch("src.bot.handlers.search.ContactRepository", return_value=repo),
+            patch("src.bot.handlers.search.list_contact_notes", AsyncMock(return_value=[])),
             patch("src.bot.handlers.search.AIService", return_value=ai_service),
             patch("src.bot.handlers.search.send_contact_card", AsyncMock()) as send_contact_card,
         ):
             await perform_search(update, context, None)
 
-        ai_service.semantic_search.assert_not_awaited()
+        ai_service.semantic_search.assert_awaited_once()
         sent_contacts = [call.args[1].username for call in send_contact_card.await_args_list]
         self.assertEqual(sent_contacts, ["tagged", "contextual"])
+
+    async def test_perform_search_merges_semantic_matches_for_multi_factor_query(self) -> None:
+        contacts = [
+            SimpleNamespace(
+                id=1,
+                username="moscow_only",
+                display_name="Москва",
+                description="живет и работает в Москве",
+                tags=[],
+            ),
+            SimpleNamespace(
+                id=2,
+                username="founder",
+                display_name="Фаундер",
+                description="делает b2b сервис",
+                tags=["#стартап"],
+            ),
+        ]
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=42),
+            message=SimpleNamespace(
+                text=None,
+                reply_text=AsyncMock(),
+                chat=SimpleNamespace(send_action=AsyncMock()),
+            ),
+        )
+        context = SimpleNamespace(user_data={})
+        repo = SimpleNamespace(get_all_for_user=AsyncMock(return_value=contacts))
+        ai_service = SimpleNamespace(semantic_search=AsyncMock(return_value=[contacts[1]]))
+
+        with (
+            patch("src.bot.handlers.search.get_supabase", AsyncMock(return_value=object())),
+            patch("src.bot.handlers.search.ContactRepository", return_value=repo),
+            patch("src.bot.handlers.search.list_contact_notes", AsyncMock(return_value=[])),
+            patch("src.bot.handlers.search.AIService", return_value=ai_service),
+            patch("src.bot.handlers.search.send_contact_card", AsyncMock()) as send_contact_card,
+        ):
+            await perform_search(update, context, "покажи тех, кто занимается бизнесом в москве")
+
+        ai_service.semantic_search.assert_awaited_once()
+        sent_contacts = [call.args[1].username for call in send_contact_card.await_args_list]
+        self.assertEqual(sent_contacts, ["moscow_only", "founder"])
 
 
 if __name__ == "__main__":

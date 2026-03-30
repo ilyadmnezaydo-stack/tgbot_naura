@@ -71,6 +71,7 @@ from src.config import settings
 from src.db.engine import get_supabase
 from src.db.repositories.contacts import ContactRepository
 from src.scheduler.setup import setup_scheduler
+from src.services.ai_service import AIService
 from src.services.analytics_service import record_button_click, record_interaction
 from src.services.speech_to_text_service import (
     EmptyTranscription,
@@ -331,9 +332,16 @@ async def route_text_input(
     if await check_and_offer_username_contact(update, context, text):
         return
 
-    if context.user_data.get("_input_text_override") is not None and looks_like_search_query(text):
-        await perform_search(update, context, text)
-        return
+    if context.user_data.get("_input_text_override") is not None:
+        if looks_like_search_query(text):
+            await perform_search(update, context, text)
+            return
+
+        ai_service = AIService()
+        interpreted_search_query = await ai_service.interpret_contact_search_request(text)
+        if interpreted_search_query:
+            await perform_search(update, context, interpreted_search_query)
+            return
 
     await update.message.reply_text(
         "Не понял, какой сценарий ты хочешь запустить.\n\n"

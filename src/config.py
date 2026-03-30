@@ -33,7 +33,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("LLM_API_KEY", "OPENAI_API_KEY"),
     )
     LLM_MODEL: str = Field(
-        default="qwen2.5:3b",
+        default="qwen2.5:7b",
         validation_alias=AliasChoices("LLM_MODEL", "OPENAI_MODEL"),
     )
 

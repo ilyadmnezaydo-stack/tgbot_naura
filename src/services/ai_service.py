@@ -107,8 +107,32 @@ class SupportTriage(BaseModel):
     )
 
 
+class InterpretedSearchRequest(BaseModel):
+    """Structured output for deciding whether a message should trigger contact search."""
+
+    is_contact_search: bool = Field(
+        description="True если пользователь хочет найти или показать контакты"
+    )
+    search_query: Optional[str] = Field(
+        default=None,
+        description="Короткий нормализованный запрос для поиска по контактам",
+    )
+
+
+class SemanticSearchSelection(BaseModel):
+    """Structured output for semantic contact search."""
+
+    usernames: list[str] = Field(
+        default_factory=list,
+        description="Список username, отсортированных по релевантности",
+    )
+
+
 class AIService:
     """AI service for contact parsing, tag extraction, and semantic search."""
+
+    _PLACEHOLDER_VALUES = {"unknown", "неопределено", "undefined", "none", "null", "n/a"}
+    _PLACEHOLDER_TAGS = {"#unknown", "#неопределено", "#undefined", "#other", "#misc", "#tag"}
 
     def __init__(self):
         self.base_url = settings.LLM_BASE_URL.rstrip("/")
@@ -174,15 +198,70 @@ class AIService:
 
         return "\n".join(parts).strip()
 
+    @staticmethod
+    def _compact_text(value: str | None, limit: int = 280) -> str:
+        """Keep prompt payload compact while preserving the key meaning."""
+        if not value:
+            return ""
+        compact = " ".join(value.split()).strip()
+        if len(compact) <= limit:
+            return compact
+        return compact[: limit - 1].rstrip() + "…"
+
+    @classmethod
+    def _is_low_signal_text(cls, value: str | None) -> bool:
+        """Detect placeholder-like model output that should not overwrite user data."""
+        compact = " ".join((value or "").split()).strip()
+        if not compact:
+            return True
+
+        if compact.lower() in cls._PLACEHOLDER_VALUES:
+            return True
+
+        visible_chars = [char for char in compact if not char.isspace()]
+        if not visible_chars:
+            return True
+
+        placeholder_chars = sum(1 for char in visible_chars if char in {"?", "�"})
+        return placeholder_chars / len(visible_chars) >= 0.35
+
+    @classmethod
+    def _sanitize_tags(cls, tags: list[str] | None) -> list[str]:
+        """Drop duplicate or placeholder tags returned by the model."""
+        sanitized: list[str] = []
+        seen: set[str] = set()
+
+        for raw_tag in tags or []:
+            normalized = cls._normalize_tag(raw_tag)
+            if not normalized or normalized in cls._PLACEHOLDER_TAGS:
+                continue
+
+            if cls._is_low_signal_text(normalized.lstrip("#")):
+                continue
+
+            if normalized in seen:
+                continue
+
+            seen.add(normalized)
+            sanitized.append(normalized)
+            if len(sanitized) >= 5:
+                break
+
+        return sanitized
+
     async def _complete(self, system_prompt: str, user_prompt: str) -> str:
         last_error: Exception | None = None
 
         for attempt in range(3):
             try:
+                headers = {"Content-Type": "application/json"}
+                if self.api_key:
+                    headers["Authorization"] = f"Bearer {self.api_key}"
+
                 response = await asyncio.to_thread(
                     requests.post,
                     f"{self.base_url}/chat/completions",
-                    headers={"Content-Type": "application/json"},
+                    headers=headers,
                     json={
                         "model": self.model,
                         "temperature": 0,
@@ -291,11 +370,13 @@ class AIService:
         if not parsed:
             return None
 
-        parsed.tags = [
-            normalized
-            for normalized in (self._normalize_tag(tag) for tag in parsed.tags)
-            if normalized
-        ][:5]
+        fallback_description = " ".join(text.split()).strip()
+        if self._is_low_signal_text(parsed.description):
+            parsed.description = fallback_description
+        else:
+            parsed.description = " ".join(parsed.description.split()).strip()
+
+        parsed.tags = self._sanitize_tags(parsed.tags)
         return parsed
 
     async def parse_contact_edit(
@@ -415,55 +496,109 @@ class AIService:
         if not isinstance(data, list):
             return []
 
-        result = []
-        for tag in data:
-            if not isinstance(tag, str):
-                continue
-            normalized = self._normalize_tag(tag)
-            if normalized:
-                result.append(normalized)
+        return self._sanitize_tags([tag for tag in data if isinstance(tag, str)])
 
-        return result[:5]
+    async def interpret_contact_search_request(self, text: str) -> Optional[str]:
+        """
+        Decide whether a free-form message is a contact search request and normalize it.
+        Useful after speech-to-text, when voice phrasing is conversational.
+        """
+        if not text or not text.strip():
+            return None
+
+        system_prompt = """Ты понимаешь запросы пользователя к личному CRM по контактам.
+
+Верни строго JSON:
+{
+  "is_contact_search": true,
+  "search_query": "краткий поисковый запрос или null"
+}
+
+Правила:
+- is_contact_search=true, если пользователь хочет найти, показать, перечислить, отфильтровать или спросить, есть ли контакты с нужными признаками
+- если это не поиск контактов, верни is_contact_search=false и search_query=null
+- search_query должен быть коротким, но сохранить все важные фильтры: роль, сфера, город, интерес, имя, компания и т.д.
+- не отвечай на вопрос сам, не объясняй логику, только классифицируй и нормализуй запрос
+- если формулировка уже хорошая, можно вернуть её почти без изменений
+
+Верни только JSON без пояснений."""
+
+        parsed = await self._complete_model(system_prompt, text, InterpretedSearchRequest)
+        if not parsed or not parsed.is_contact_search:
+            return None
+
+        normalized_query = " ".join((parsed.search_query or "").split()).strip()
+        if self._is_low_signal_text(normalized_query):
+            normalized_query = " ".join(text.split()).strip()
+        return normalized_query or None
 
     async def semantic_search(
         self,
         query: str,
         contacts: list["SimpleNamespace"],
+        contact_notes: Optional[dict[str, list[str]]] = None,
     ) -> list["SimpleNamespace"]:
         """
         Use the local LLM to find contacts matching a semantic query.
         """
-        if not contacts:
+        if not contacts or not query or not query.strip():
             return []
 
         contacts_info = [
             {
                 "username": contact.username,
-                "description": contact.description or "",
+                "display_name": getattr(contact, "display_name", None) or "",
+                "description": self._compact_text(contact.description or "", limit=320),
                 "tags": contact.tags or [],
+                "notes": [
+                    self._compact_text(note, limit=180)
+                    for note in (contact_notes or {}).get(str(getattr(contact, "id", "")), [])[:3]
+                    if note
+                ],
             }
             for contact in contacts
         ]
 
-        system_prompt = """Ты помогаешь искать контакты по запросу пользователя.
+        system_prompt = """Ты помогаешь искать контакты в личном CRM.
 
-Верни только JSON-массив username, например:
-["ivan", "anna"]
+Пользователь может спрашивать как прямо, так и косвенно:
+- «кто из бизнеса в Москве»
+- «покажи людей из стартапов»
+- «есть ли у меня кто-то по инвестициям»
+
+Для каждого контакта доступны поля:
+- username
+- display_name
+- description
+- tags
+- notes
 
 Правила:
-- учитывай description, tags и очевидные синонимы
+- ищи по совокупности признаков, а не только по буквальному совпадению слов
+- notes тоже важны: в них может быть свежий контекст по человеку
+- можно делать осторожные выводы по близким понятиям:
+  founder / cofounder / стартап / предприниматель / owner / CEO / инвестиции / b2b / SaaS -> могут быть связаны с бизнесом
+  Москва / Moscow / мск -> это Москва
+- не выдумывай факты, если в данных нет разумной опоры
 - возвращай только действительно подходящие контакты
-- если совпадений нет, верни []"""
+- сортируй usernames по убыванию релевантности
+
+Верни строго JSON:
+{
+  "usernames": ["ivan", "anna"]
+}
+
+Если подходящих нет, верни {"usernames": []}. Без пояснений."""
 
         user_prompt = (
-            f"Запрос: {query}\n\n"
+            f"Запрос пользователя: {query}\n\n"
             f"Контакты:\n{json.dumps(contacts_info, ensure_ascii=False, indent=2)}"
         )
-        data = await self._complete_json(system_prompt, user_prompt)
-        if not isinstance(data, list):
+        parsed = await self._complete_model(system_prompt, user_prompt, SemanticSearchSelection)
+        if not parsed:
             return []
 
-        matching_usernames = [username.lower() for username in data if isinstance(username, str)]
+        matching_usernames = [username.lower() for username in parsed.usernames if isinstance(username, str)]
         return [
             contact
             for contact in contacts

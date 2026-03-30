@@ -14,6 +14,7 @@ from src.bot.input_text import get_input_text
 from src.db.engine import get_supabase
 from src.db.repositories.contacts import ContactRepository
 from src.services.ai_service import AIService
+from src.services.contact_notes_service import list_contact_notes
 from src.services.contact_enrichment import _KEYWORD_TAGS
 
 _HASHTAG_RE = re.compile(r"#([\w/-]+)", flags=re.UNICODE)
@@ -124,6 +125,7 @@ _SEARCH_INTENT_PREFIXES = (
 )
 _SEARCH_INTENT_PHRASES = (
     "кто у меня",
+    "есть ли у меня",
     "поиск ",
     "контакты ",
 )
@@ -347,6 +349,25 @@ def _merge_search_results(*groups: list) -> list:
     return merged
 
 
+def _group_notes_by_contact_id(notes: list) -> dict[str, list[str]]:
+    """Group saved notes by contact id for downstream semantic search."""
+    grouped: dict[str, list[str]] = {}
+    for note in notes:
+        contact_id = str(getattr(note, "contact_id", "") or "")
+        text = (getattr(note, "text", "") or "").strip()
+        if not contact_id or not text:
+            continue
+        grouped.setdefault(contact_id, []).append(text)
+    return grouped
+
+
+def _should_use_semantic_search(query: str, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Run the LLM for richer multi-factor or voice-driven searches."""
+    if context.user_data.get("_input_text_override") is not None:
+        return True
+    return len(_extract_query_words(query)) >= 2
+
+
 def _build_search_summary(
     *,
     total: int,
@@ -361,7 +382,7 @@ def _build_search_summary(
     if context_count:
         parts.append(f"потом контекст ({context_count})")
     if semantic_count:
-        parts.append(f"в конце AI-fallback ({semantic_count})")
+        parts.append(f"потом AI-смысл ({semantic_count})")
 
     details = ", ".join(parts) if parts else "показал только точные совпадения"
     return f"🔎 <b>Нашёл {total}</b>\n{details}."
@@ -424,9 +445,15 @@ async def perform_search(
     context_matches = _find_context_matches(resolved_query, all_contacts, tag_match_ids)
 
     semantic_matches: list = []
-    if not tag_matches and not context_matches:
+    if _should_use_semantic_search(resolved_query, context) or (not tag_matches and not context_matches):
+        notes = await list_contact_notes({str(contact.id) for contact in all_contacts})
+        notes_by_contact_id = _group_notes_by_contact_id(notes)
         ai_service = AIService()
-        semantic_matches = await ai_service.semantic_search(query=resolved_query, contacts=all_contacts)
+        semantic_matches = await ai_service.semantic_search(
+            query=resolved_query,
+            contacts=all_contacts,
+            contact_notes=notes_by_contact_id,
+        )
 
     matching = _merge_search_results(tag_matches, context_matches, semantic_matches)
 
